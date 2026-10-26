@@ -1,0 +1,13 @@
+[versions]
+kotlin = "2.2.20"
+coroutines = "1.10.2"
+jserialcomm = "2.11.0"
+
+[libraries]
+coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+jserialcomm = { module = "com.fazecast:jSerialComm", version.ref = "jserialcomm" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
