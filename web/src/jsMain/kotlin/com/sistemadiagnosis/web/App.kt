@@ -202,8 +202,10 @@ class App(private val root: HTMLElement) {
             scope.launch { connect(CallbackTransport(WebBluetoothLink(device), openTimeoutMs = 15_000), demo = false) }
             Unit
         }, { error: Throwable ->
-            // NotFoundError: el usuario cerró el selector sin elegir.
-            if (error.asDynamic().name != "NotFoundError") {
+            // NotFoundError: el usuario cerró el selector sin elegir, a menudo porque su adaptador no aparecía.
+            if (error.asDynamic().name == "NotFoundError") {
+                toast("¿No aparece tu adaptador? Puede ser Bluetooth clásico, que no funciona en iPhone", "warn")
+            } else {
                 showError("No se pudo abrir el Bluetooth", error.message ?: "Error desconocido", CONNECTION_HINTS)
             }
             Unit

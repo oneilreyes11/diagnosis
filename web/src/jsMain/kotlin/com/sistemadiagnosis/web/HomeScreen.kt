@@ -44,7 +44,7 @@ private fun App.renderWelcome(screen: HTMLElement) {
         el("ol", "steps") {
             step("Enchufa el adaptador", "En el conector OBD, bajo el volante.")
             step("Pon el contacto", "Para ver datos en vivo, arranca el motor.")
-            step("Pulsa «Conectar adaptador»", "Y elige tu adaptador Bluetooth en la lista.")
+            step("Pulsa «Conectar adaptador»", "Y elige tu adaptador en la lista. No lo emparejes desde Ajustes › Bluetooth del móvil: se conecta desde aquí.")
         }
     }
 
