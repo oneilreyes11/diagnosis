@@ -134,7 +134,8 @@ class WebBluetoothLink(private val device: dynamic) : ByteLink {
                 characteristics.joinToString { "${it.uuid} (${describe(it)})" }.ifEmpty { "sin características" })
             val notify = characteristics.firstOrNull { it.properties.notify == true || it.properties.indicate == true }
             val write = characteristics.firstOrNull { it.properties.write == true || it.properties.writeWithoutResponse == true }
-            if (notify != null && write != null) return notify to write
+            // Sin `to`: sobre un valor dynamic, Kotlin lo compila como llamada a un método JS `.to()` inexistente.
+            if (notify != null && write != null) return Pair<dynamic, dynamic>(notify, write)
         }
         return null
     }

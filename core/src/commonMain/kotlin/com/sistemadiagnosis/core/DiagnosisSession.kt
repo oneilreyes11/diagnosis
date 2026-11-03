@@ -16,6 +16,7 @@ import com.sistemadiagnosis.core.obd.Vin
 import com.sistemadiagnosis.core.transport.MockTransport
 import com.sistemadiagnosis.core.transport.SimulatedVehicle
 import com.sistemadiagnosis.core.transport.Transport
+import com.sistemadiagnosis.core.transport.TransportException
 import com.sistemadiagnosis.core.vehicle.VehicleProfile
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -176,10 +177,15 @@ class DiagnosisSession(
         }
     }
 
-    /** Un dato opcional que falle no debe tumbar toda la operación. */
+    /**
+     * Un dato opcional que falle no debe tumbar toda la operación, salvo que se
+     * haya perdido la conexión: entonces no se ha leído nada y hay que decirlo.
+     */
     private inline fun <T> orNull(block: () -> T): T? =
         try {
             block()
+        } catch (e: TransportException) {
+            throw e
         } catch (e: DiagnosisException) {
             null
         }

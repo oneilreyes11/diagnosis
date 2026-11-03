@@ -127,7 +127,7 @@ fun showError(
         p("technical", detail)
         div("sheet-actions") {
             if (action != null) button("btn btn-primary", action.first, { close(); action.second() })
-            if (shareLog) button("btn btn-ghost", "Compartir registro", { DebugLog.share() }) { icon("copy") }
+            if (shareLog) button("btn btn-ghost", "Compartir registro", { DebugLog.share() }) { icon("share") }
             button("btn btn-ghost", "Cerrar", { close() })
         }
     }

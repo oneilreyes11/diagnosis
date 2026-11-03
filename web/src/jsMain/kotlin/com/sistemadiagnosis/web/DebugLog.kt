@@ -109,9 +109,10 @@ object DebugLog {
 
     private fun clock(): String {
         val date: dynamic = js("new Date()")
-        fun two(value: dynamic) = value.toString().padStart(2, '0')
-        return "${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}." +
-            date.getMilliseconds().toString().padStart(3, '0')
+        // padStart de Kotlin sobre Int: el de JS recibiría el Char '0' como número.
+        fun pad(value: dynamic, digits: Int) = value.unsafeCast<Int>().toString().padStart(digits, '0')
+        return "${pad(date.getHours(), 2)}:${pad(date.getMinutes(), 2)}:${pad(date.getSeconds(), 2)}." +
+            pad(date.getMilliseconds(), 3)
     }
 }
 

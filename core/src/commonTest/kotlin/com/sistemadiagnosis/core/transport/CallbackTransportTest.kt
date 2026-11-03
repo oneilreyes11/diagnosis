@@ -81,6 +81,34 @@ class CallbackTransportTest {
     }
 
     @Test
+    fun `un corte avisa al momento y cerrar desde la app no`() = runTest {
+        val link = FakeLink()
+        val transport = CallbackTransport(link)
+        val reasons = mutableListOf<String>()
+        transport.onDisconnected = { reasons += it }
+
+        transport.open()
+        link.dropConnection("se apagó el adaptador")
+        assertEquals(listOf("se apagó el adaptador"), reasons)
+
+        val other = CallbackTransport(FakeLink())
+        other.onDisconnected = { reasons += "no debería llegar" }
+        other.open()
+        other.close()
+        assertEquals(1, reasons.size)
+    }
+
+    @Test
+    fun `perder la conexion no se oculta como un informe sin averias`() = runTest {
+        val link = FakeLink(Elm327Simulator(SimulatedVehicle.audiA3()))
+        val session = DiagnosisSession(CallbackTransport(link))
+        session.connect()
+        link.dropConnection("fuera de alcance")
+
+        assertFailsWith<TransportException> { session.runDiagnostics() }
+    }
+
+    @Test
     fun `cerrar cierra el enlace nativo`() = runTest {
         val link = FakeLink()
         val transport = CallbackTransport(link)

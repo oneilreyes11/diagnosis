@@ -226,6 +226,12 @@ class App(private val root: HTMLElement) {
         link = LinkState.Connecting
         render()
         val newSession = DiagnosisSession(LoggingTransport(transport, ::logTraffic), vehicle)
+        if (transport is CallbackTransport) {
+            transport.onDisconnected = { reason ->
+                // Solo para la sesión activa: durante connect() el propio fallo ya lo explica.
+                if (session === newSession) handleFailure(TransportException(reason))
+            }
+        }
         if (demo) DebugLog.startAttempt("Demostración")
         DebugLog.add("Sesión: inicializando adaptador y conectando con el coche…")
         try {
@@ -297,6 +303,8 @@ class App(private val root: HTMLElement) {
 
     fun handleFailure(error: DiagnosisException, title: String = "Error en la lectura") {
         DebugLog.error(if (error is TransportException) "conexión perdida (pantalla: Se perdió la conexión)" else title, error)
+        // El aviso de corte y la lectura en curso pueden fallar a la vez: basta con un mensaje.
+        if (error is TransportException && link == LinkState.Disconnected) return
         if (error is TransportException) {
             session = null
             link = LinkState.Disconnected

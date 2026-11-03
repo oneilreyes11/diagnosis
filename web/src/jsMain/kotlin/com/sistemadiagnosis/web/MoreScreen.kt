@@ -60,7 +60,7 @@ internal fun App.renderMore(screen: HTMLElement) {
         )
         p("muted", if (DebugLog.isEmpty) "Vacío." else "${DebugLog.size} líneas guardadas.")
         div("button-row") {
-            button("btn btn-primary btn-sm", "Compartir", { DebugLog.share() }) { icon("copy") }
+            button("btn btn-primary btn-sm", "Compartir", { DebugLog.share() }) { icon("share") }
             button("btn btn-ghost btn-sm", "Copiar", { DebugLog.copy() }) { icon("copy") }
             button("btn btn-ghost btn-sm", "Borrar", {
                 DebugLog.clear()

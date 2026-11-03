@@ -43,6 +43,12 @@ class CallbackTransport(
     override var isOpen = false
         private set
 
+    /**
+     * Se llama si la conexión se corta sola después de abrirse (no al cerrarla la
+     * app), para avisar en el momento y no en la siguiente lectura.
+     */
+    var onDisconnected: ((reason: String) -> Unit)? = null
+
     override suspend fun open() {
         if (isOpen) return
         disconnectReason = null
@@ -58,9 +64,12 @@ class CallbackTransport(
 
             override fun onClosed(error: String?) {
                 val reason = error ?: "conexión cerrada"
+                // close() marca isOpen = false antes de cerrar el enlace: así se distingue un corte.
+                val wasOpen = isOpen
                 isOpen = false
                 disconnectReason = reason
                 opened.completeExceptionally(TransportException("No se pudo abrir $displayName: $reason"))
+                if (wasOpen) onDisconnected?.invoke(reason)
             }
         })
         withTimeoutOrNull(openTimeoutMs) { opened.await() } ?: run {
