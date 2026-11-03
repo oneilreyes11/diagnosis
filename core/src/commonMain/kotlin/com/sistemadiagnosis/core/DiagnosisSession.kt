@@ -17,9 +17,17 @@ import com.sistemadiagnosis.core.transport.MockTransport
 import com.sistemadiagnosis.core.transport.SimulatedVehicle
 import com.sistemadiagnosis.core.transport.Transport
 import com.sistemadiagnosis.core.transport.TransportException
+import com.sistemadiagnosis.core.uds.ModuleIdentity
+import com.sistemadiagnosis.core.uds.UdsClient
+import com.sistemadiagnosis.core.uds.UdsDtc
+import com.sistemadiagnosis.core.vehicle.EcuDefinition
 import com.sistemadiagnosis.core.vehicle.VehicleProfile
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.time.TimeSource
 
@@ -61,6 +69,21 @@ data class DiagnosticReport(
 
 data class LiveSample(val values: Map<Int, Double>, val updatesPerSecond: Double)
 
+/** Avería de una centralita con su descripción y la gravedad que se le da. */
+data class ModuleFault(val code: UdsDtc, val description: DtcDescription, val severity: Severity)
+
+/** Resultado de una centralita en el escaneo completo. */
+data class ModuleScanResult(
+    val module: EcuDefinition,
+    val present: Boolean,
+    val identity: ModuleIdentity?,
+    val faults: List<ModuleFault>,
+    /** Fallo al leerla (respondió pero algo salió mal); null si fue bien. */
+    val error: String?,
+) {
+    val highestSeverity: Severity? get() = faults.maxOfOrNull { it.severity }
+}
+
 /** Punto de entrada para las apps (web, iOS, Android, CLI). */
 class DiagnosisSession(
     private val transport: Transport,
@@ -68,6 +91,13 @@ class DiagnosisSession(
 ) {
     private val elm = Elm327Driver(transport)
     private val obd = ObdClient(elm)
+    private val uds = UdsClient(elm, obd)
+
+    /**
+     * El escaneo cambia la centralita a la que habla el adaptador: nada más puede
+     * usarlo a la vez (datos en vivo, diagnosis del motor).
+     */
+    private val busMutex = Mutex()
 
     val transportName: String get() = transport.displayName
 
@@ -97,7 +127,9 @@ class DiagnosisSession(
 
     /** Testigo, monitores, averías (confirmadas, pendientes y permanentes), datos congelados y contadores. */
     @Throws(DiagnosisException::class, CancellationException::class)
-    suspend fun runDiagnostics(): DiagnosticReport = withExpectedErrors {
+    suspend fun runDiagnostics(): DiagnosticReport = withExpectedErrors { busMutex.withLock { readEngineReport() } }
+
+    private suspend fun readEngineReport(): DiagnosticReport {
         val status = orNull { obd.readMonitorStatus() }
         val found = DtcKind.entries.flatMap { kind -> (orNull { obd.readDtcs(kind) } ?: emptyList()).map { it to kind } }
         val faults = found.groupBy({ it.first }, { it.second })
@@ -110,7 +142,7 @@ class DiagnosisSession(
         val freezeFrame = if (faults.isEmpty()) null else orNull { obd.readFreezeFrame() }
         val supported = connection?.supportedPids.orEmpty()
         val trip = orNull { obd.readPids(TRIP_PIDS.filter { it in supported }) } ?: emptyMap()
-        DiagnosticReport(status, faults, freezeFrame, trip)
+        return DiagnosticReport(status, faults, freezeFrame, trip)
     }
 
     /**
@@ -118,7 +150,71 @@ class DiagnosisSession(
      * de emisiones: tras borrar hay que conducir para que vuelvan a completarse.
      */
     @Throws(DiagnosisException::class, CancellationException::class)
-    suspend fun clearFaults() = withExpectedErrors { obd.clearDtcs() }
+    suspend fun clearFaults() = withExpectedErrors { busMutex.withLock { obd.clearDtcs() } }
+
+    /**
+     * Escaneo completo: recorre las centralitas del perfil del vehículo y emite el
+     * resultado de cada una según termina. Al acabar (o cancelarse) deja el
+     * adaptador apuntando de nuevo al motor para OBD-II.
+     */
+    fun scanModules(): Flow<ModuleScanResult> = flow {
+        val profile = vehicle ?: return@flow
+        busMutex.withLock {
+            try {
+                for (module in profile.modules) emit(withExpectedErrors { scanModule(module) })
+            } finally {
+                withContext(NonCancellable) { orNull { uds.restore(profile.engineEcu) } }
+            }
+        }
+    }
+
+    /** Vuelve a leer una sola centralita (p.ej. tras borrar sus averías). */
+    @Throws(DiagnosisException::class, CancellationException::class)
+    suspend fun rescanModule(module: EcuDefinition): ModuleScanResult = withExpectedErrors {
+        val profile = vehicle ?: throw DiagnosisException("Sin perfil de vehículo")
+        busMutex.withLock {
+            try {
+                scanModule(module)
+            } finally {
+                withContext(NonCancellable) { orNull { uds.restore(profile.engineEcu) } }
+            }
+        }
+    }
+
+    /** Borra la memoria de averías de una centralita. */
+    @Throws(DiagnosisException::class, CancellationException::class)
+    suspend fun clearModuleFaults(module: EcuDefinition) = withExpectedErrors {
+        val profile = vehicle ?: return@withExpectedErrors
+        busMutex.withLock {
+            try {
+                uds.select(module)
+                uds.clearDtcs()
+            } finally {
+                withContext(NonCancellable) { orNull { uds.restore(profile.engineEcu) } }
+            }
+        }
+    }
+
+    private suspend fun scanModule(module: EcuDefinition): ModuleScanResult =
+        try {
+            uds.select(module)
+            if (!uds.isPresent()) {
+                ModuleScanResult(module, present = false, identity = null, faults = emptyList(), error = null)
+            } else {
+                val identity = uds.readIdentity()
+                val faults = uds.readDtcs().map { code ->
+                    val description = DtcKnowledge.describe(code.dtc, vehicle)
+                    // Sin ficha propia del código, pesa la importancia de la centralita (airbag, frenos…).
+                    val severity = if (description.isDocumented) description.severity else module.importance
+                    ModuleFault(code, description, severity)
+                }.sortedByDescending { it.severity }
+                ModuleScanResult(module, present = true, identity = identity, faults = faults, error = null)
+            }
+        } catch (e: TransportException) {
+            throw e
+        } catch (e: DiagnosisException) {
+            ModuleScanResult(module, present = true, identity = null, faults = emptyList(), error = e.message)
+        }
 
     /**
      * Lee los datos pedidos en bucle mientras se recoja el flujo. Incluye los
@@ -137,7 +233,7 @@ class DiagnosisSession(
             val started = TimeSource.Monotonic.markNow()
             // La presión atmosférica apenas cambia: basta con leerla de vez en cuando.
             val request = if (baroNeeded && (baro == null || cycle % 30 == 0)) fast + BARO else fast
-            val values = withExpectedErrors { obd.readPids(request) }.toMutableMap()
+            val values = withExpectedErrors { busMutex.withLock { obd.readPids(request) } }.toMutableMap()
             val readBaro = values[BARO]
             if (readBaro != null) baro = readBaro else baro?.let { values[BARO] = it }
             values += PidCatalog.derive(values)

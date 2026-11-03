@@ -590,6 +590,60 @@ p, h1, h2, h3 { margin: 0; }
 .severity { display: inline-flex; align-items: center; gap: 7px; font-size: 0.82rem; font-weight: 650; color: var(--tone); }
 .severity-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--tone); }
 
+/* --- Escaneo completo ---------------------------------------------------- */
+
+.scan-card { display: grid; gap: 14px; }
+.scan-head { display: flex; align-items: center; gap: 14px; }
+
+.progress { height: 8px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
+.progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 0.3s ease-out;
+}
+.progress-label { color: var(--muted); font-size: 0.85rem; margin-top: -6px; }
+
+.module-list { display: grid; margin: 0 -6px; }
+.module-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 6px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+.module-row + .module-row { border-top: 1px solid var(--border); border-radius: 0; }
+.module-row:hover, .module-row:focus-visible { background: var(--surface-2); outline: none; }
+.module-address {
+  flex: none;
+  width: 40px;
+  padding: 6px 0;
+  border-radius: 10px;
+  text-align: center;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 0.9rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+
+.absent-modules summary { cursor: pointer; color: var(--muted); font-size: 0.88rem; }
+.absent-modules .bullets { margin-top: 8px; font-size: 0.88rem; }
+
+.group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 2px 0; }
+.group-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+
+.fault-subtype { color: var(--tone); font-size: 0.86rem; font-weight: 600; margin-top: 4px; }
+.empty-compact { padding: 20px 16px; }
+.empty-compact .empty-icon { width: 56px; height: 56px; border-radius: 18px; }
+
 /* --- Hoja de detalle ----------------------------------------------------- */
 
 .sheet-overlay {

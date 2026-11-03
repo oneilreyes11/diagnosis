@@ -1,5 +1,7 @@
 package com.sistemadiagnosis.core.vehicle
 
+import com.sistemadiagnosis.core.knowledge.Severity
+
 /** Vehículos soportados. Solo se añaden los que el propietario pide. */
 object Vehicles {
     private const val MISFIRE_NOTE =
@@ -20,6 +22,8 @@ object Vehicles {
     private const val BATTERY_NOTE =
         "Con Start&Stop, una batería debilitada provoca estos avisos antes que ningún otro síntoma. Si cambias la batería, hay que registrarla en la centralita para que el alternador la cargue bien."
 
+    private val ENGINE = EcuDefinition("01", "Electrónica del motor", 0x7E0, 0x7E8, Severity.HIGH)
+
     val AUDI_A3_8Y_DFYA = VehicleProfile(
         id = "audi-a3-8y-2021-dfya",
         brand = "Audi",
@@ -35,7 +39,28 @@ object Vehicles {
             fuel = "Gasolina",
             features = listOf("Inyección directa", "Turbo", "Desconexión de cilindros (ACT)", "Filtro de partículas"),
         ),
-        engineEcu = EcuDefinition("01", "Electrónica del motor", requestId = 0x7E0, responseId = 0x7E8),
+        engineEcu = ENGINE,
+        // Direcciones de diagnosis UDS habituales del grupo VAG (MQB). Fuera del motor y el
+        // cambio, la respuesta llega en petición + 0x6A. Las que no estén montadas no responden.
+        modules = listOf(
+            ENGINE,
+            EcuDefinition("02", "Electrónica del cambio", 0x7E1, 0x7E9, Severity.HIGH),
+            EcuDefinition("03", "Electrónica de frenos (ABS/ESC)", 0x713, 0x77D, Severity.HIGH),
+            EcuDefinition("08", "Climatizador", 0x746, 0x7B0, Severity.LOW),
+            EcuDefinition("09", "Electrónica central", 0x70E, 0x778),
+            EcuDefinition("10", "Ayuda de aparcamiento", 0x70A, 0x774, Severity.LOW),
+            EcuDefinition("13", "Regulación de distancia (ACC)", 0x757, 0x7C1),
+            EcuDefinition("15", "Airbag", 0x715, 0x77F, Severity.HIGH),
+            EcuDefinition("16", "Electrónica de la columna de dirección", 0x70C, 0x776),
+            EcuDefinition("17", "Cuadro de instrumentos", 0x714, 0x77E, Severity.LOW),
+            EcuDefinition("19", "Interfaz de diagnosis (gateway)", 0x710, 0x77A),
+            EcuDefinition("42", "Electrónica de la puerta del conductor", 0x74A, 0x7B4, Severity.LOW),
+            EcuDefinition("44", "Dirección asistida", 0x712, 0x77C, Severity.HIGH),
+            EcuDefinition("52", "Electrónica de la puerta del acompañante", 0x74B, 0x7B5, Severity.LOW),
+            EcuDefinition("53", "Freno de estacionamiento", 0x752, 0x7BC, Severity.HIGH),
+            EcuDefinition("5F", "Electrónica de información (multimedia)", 0x773, 0x7DD, Severity.LOW),
+            EcuDefinition("75", "Telemática (llamada de emergencia)", 0x767, 0x7D1),
+        ),
         vinWmis = setOf("WAU", "WUA", "TRU"),
         // Código de modelo del 8Y en el VIN; se confirmará con el VIN real del coche.
         vinModelCodes = setOf("GY", "8Y"),

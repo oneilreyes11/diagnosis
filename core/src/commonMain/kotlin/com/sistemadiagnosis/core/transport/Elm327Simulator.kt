@@ -8,6 +8,18 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.time.TimeSource
 
+/** Avería UDS simulada: código, tipo de fallo y byte de estado. */
+data class SimulatedDtc(val code: String, val failureType: Int, val status: Int)
+
+/** Centralita que responde por UDS en el simulador. */
+data class SimulatedModule(
+    val requestId: Int,
+    val systemName: String,
+    val partNumber: String,
+    val softwareVersion: String,
+    val dtcs: List<SimulatedDtc> = emptyList(),
+)
+
 /** Vehículo que responde a través de [Elm327Simulator]. */
 data class SimulatedVehicle(
     val protocol: ObdProtocol = ObdProtocol.ISO_15765_4_CAN_11_500,
@@ -20,15 +32,37 @@ data class SimulatedVehicle(
     val engineRunning: Boolean = true,
     /** Muchos clones ELM327 no contestan si se piden más PIDs de estos en una petición. */
     val maxPidsPerRequest: Int = 6,
+    /** Centralitas UDS además del motor (que responde en 7E0 con sus averías OBD). */
+    val modules: List<SimulatedModule> = emptyList(),
 ) {
     companion object {
-        /** Demostración: Audi A3 8Y 1.5 TFSI con un fallo de encendido en el cilindro 2. */
+        /**
+         * Demostración: Audi A3 8Y 1.5 TFSI con un fallo de encendido en el cilindro 2,
+         * un aviso en la electrónica central y otro intermitente en el cuadro. Sin ACC
+         * ni ayuda de aparcamiento montados.
+         */
         fun audiA3(): SimulatedVehicle = SimulatedVehicle(
             vin = "WAUZZZGY5MA000001",
             batteryVoltage = 14.1,
             storedDtcs = listOf("P0302"),
             pendingDtcs = listOf("P2181"),
             permanentDtcs = listOf("P0302"),
+            modules = listOf(
+                SimulatedModule(0x7E1, "J743 DSG", "0GC300012D", "4021"),
+                SimulatedModule(0x713, "J104 ESC MQB", "5Q0907379BN", "0566"),
+                SimulatedModule(0x746, "J255 Climatronic", "5WA907044H", "0104"),
+                SimulatedModule(0x70E, "J519 BCM MQB", "5WA937084C", "0281", listOf(SimulatedDtc("B10B5", 0x13, 0x09))),
+                SimulatedModule(0x715, "J234 Airbag", "5WA959655F", "0612"),
+                SimulatedModule(0x70C, "J527 Lenksäule", "5WA953507C", "0170"),
+                SimulatedModule(0x714, "J285 Kombi", "8Y0920320", "0209", listOf(SimulatedDtc("U0121", 0x00, 0x28))),
+                SimulatedModule(0x710, "J533 Gateway", "5WA907530L", "2440"),
+                SimulatedModule(0x74A, "J386 Tür FS", "5Q4959593F", "0042"),
+                SimulatedModule(0x712, "J500 Lenkhilfe", "5WA909144A", "3010"),
+                SimulatedModule(0x74B, "J387 Tür BFS", "5Q4959592F", "0042"),
+                SimulatedModule(0x752, "J540 EPB", "5Q0907801J", "0094"),
+                SimulatedModule(0x773, "J794 Infotainment", "8Y0035874", "0412"),
+                SimulatedModule(0x767, "J949 eCall", "5WA035284D", "0018"),
+            ),
         )
     }
 }
@@ -52,6 +86,10 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
     private val permanent = vehicle.permanentDtcs.toMutableList()
     private var freezeFrameDtc: String? = vehicle.storedDtcs.firstOrNull()
     private var monitorsReset = false
+
+    /** Cabecera CAN actual (ATSH): 7DF es la petición funcional a todas las centralitas. */
+    private var header = FUNCTIONAL_HEADER
+    private val moduleDtcs = vehicle.modules.associate { it.requestId to it.dtcs.toMutableList() }
     private val start = TimeSource.Monotonic.markNow()
 
     /** Comandos recibidos, en orden. */
@@ -81,7 +119,7 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
 
     private fun handle(command: String): List<String>? = when {
         command == "ATZ" -> {
-            echo = true; linefeeds = true; spaces = true; connectedProtocol = null
+            echo = true; linefeeds = true; spaces = true; connectedProtocol = null; header = FUNCTIONAL_HEADER
             listOf("", "ELM327 v1.5")
         }
         command == "ATI" -> listOf("ELM327 v1.5")
@@ -89,7 +127,8 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
         command == "ATL0" || command == "ATL1" -> ok { linefeeds = command.last() == '1' }
         command == "ATS0" || command == "ATS1" -> ok { spaces = command.last() == '1' }
         command == "ATH0" || command == "ATH1" -> ok {}
-        command.startsWith("ATSH") || command.startsWith("ATCRA") || command == "ATAR" -> ok {}
+        command.startsWith("ATSH") -> ok { header = command.substring(4).toIntOrNull(16) ?: header }
+        command.startsWith("ATCRA") || command == "ATAR" || command.startsWith("ATFC") -> ok {}
         command.startsWith("ATSP") -> ok { connectedProtocol = null }
         command == "ATRV" -> listOf(formatVoltage(vehicle.batteryVoltage))
         command == "ATDPN" -> listOf(connectedProtocol?.let { "A${it.code}" } ?: "A0")
@@ -105,6 +144,7 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
         if (!vehicle.ignitionOn) return searching + "UNABLE TO CONNECT"
         connectedProtocol = vehicle.protocol
         val bytes = command.chunked(2).map { it.toInt(16) }
+        if (bytes[0] in UDS_SERVICES) return searching + (udsResponse(bytes)?.let(::message) ?: listOf("NO DATA"))
         val payload = when (bytes[0]) {
             0x01 -> currentData(bytes.drop(1))
             0x02 -> freezeFrameData(bytes.drop(1))
@@ -141,6 +181,47 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
         } ?: return null
         return listOf(0x42, pid, 0x00) + data.toList()
     }
+
+    /**
+     * Servicios UDS de la centralita a la que apunta la cabecera; null si no hay
+     * ninguna en esa dirección (el ELM327 responderá NO DATA).
+     */
+    private fun udsResponse(request: List<Int>): List<Int>? {
+        val module = vehicle.modules.firstOrNull { it.requestId == header }
+        if (module == null && header != ENGINE_HEADER) return null
+        val service = request[0]
+        return when (service) {
+            0x3E -> listOf(0x7E, 0x00)
+            0x22 -> {
+                val did = (request.getOrElse(1) { 0 } shl 8) or request.getOrElse(2) { 0 }
+                val text = identity(did, module) ?: return listOf(0x7F, 0x22, 0x31)
+                listOf(0x62, did shr 8, did and 0xFF) + text.map { it.code }
+            }
+            0x19 -> {
+                if (request.getOrNull(1) != 0x02) return listOf(0x7F, 0x19, 0x12)
+                val mask = request.getOrElse(2) { 0xFF }
+                listOf(0x59, 0x02, 0xFF) + udsDtcs(module).filter { it.status and mask != 0 }
+                    .flatMap { Dtc(it.code).toBytes().toList() + listOf(it.failureType, it.status) }
+            }
+            0x14 -> {
+                if (module == null) clear() else moduleDtcs[module.requestId]?.clear()
+                listOf(0x54)
+            }
+            else -> listOf(0x7F, service, 0x11)
+        }
+    }
+
+    private fun identity(did: Int, module: SimulatedModule?): String? = when (did) {
+        0xF187, 0xF191 -> module?.partNumber ?: "05E906012AB"
+        0xF189 -> module?.softwareVersion ?: "0003"
+        0xF197 -> module?.systemName ?: "R4 1,5L TSI"
+        else -> null
+    }
+
+    /** Las del motor salen de sus averías OBD: confirmadas (con testigo) y pendientes. */
+    private fun udsDtcs(module: SimulatedModule?): List<SimulatedDtc> =
+        if (module != null) moduleDtcs[module.requestId].orEmpty()
+        else stored.map { SimulatedDtc(it, 0x00, 0x8B) } + pending.filterNot { it in stored }.map { SimulatedDtc(it, 0x00, 0x06) }
 
     private fun dtcPayload(responseService: Int, dtcs: List<String>): List<Int> {
         val dtcBytes = dtcs.flatMap { Dtc(it).toBytes().toList() }
@@ -291,6 +372,10 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
     }
 
     private companion object {
+        const val FUNCTIONAL_HEADER = 0x7DF
+        const val ENGINE_HEADER = 0x7E0
+        val UDS_SERVICES = setOf(0x10, 0x14, 0x19, 0x22, 0x3E)
+
         val CURRENT_PIDS = setOf(
             0x01, 0x04, 0x05, 0x06, 0x07, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x15, 0x1F, 0x21, 0x23, 0x2F,
             0x30, 0x31, 0x33, 0x34, 0x3C, 0x42, 0x43, 0x44, 0x46, 0x49, 0x4C, 0x4D, 0x4E, 0x5C, 0x5E,

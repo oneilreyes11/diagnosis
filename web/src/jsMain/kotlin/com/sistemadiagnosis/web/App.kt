@@ -4,6 +4,7 @@ import com.sistemadiagnosis.core.ConnectionInfo
 import com.sistemadiagnosis.core.DiagnosisException
 import com.sistemadiagnosis.core.DiagnosisSession
 import com.sistemadiagnosis.core.DiagnosticReport
+import com.sistemadiagnosis.core.ModuleScanResult
 import com.sistemadiagnosis.core.obd.DtcKind
 import com.sistemadiagnosis.core.obd.PidCatalog
 import com.sistemadiagnosis.core.obd.PidCategory
@@ -49,6 +50,12 @@ class App(private val root: HTMLElement) {
     var scanning = false
         private set
     var tab = Tab.HOME
+        private set
+
+    /** Escaneo completo: resultados por centralita según van llegando. */
+    var moduleResults: List<ModuleScanResult> = emptyList()
+        private set
+    var moduleScanning = false
         private set
 
     /** Categoría de "En vivo"; null = destacados. */
@@ -183,7 +190,12 @@ class App(private val root: HTMLElement) {
                     if (target == tab) setAttribute("aria-current", "page")
                     icon(target.icon)
                     span("tab-label", target.label)
-                    val count = if (target == Tab.FAULTS) report?.faults?.size ?: 0 else 0
+                    // Con escaneo completo cuenta todas las centralitas (el motor incluido); si no, el OBD-II.
+                    val count = when {
+                        target != Tab.FAULTS -> 0
+                        moduleResults.isNotEmpty() -> moduleResults.sumOf { it.faults.size }
+                        else -> report?.faults?.size ?: 0
+                    }
                     if (count > 0) span("tab-badge", "$count")
                 }
             }
@@ -223,6 +235,7 @@ class App(private val root: HTMLElement) {
     private suspend fun connect(transport: Transport, demo: Boolean) {
         traffic.clear()
         report = null
+        moduleResults = emptyList()
         link = LinkState.Connecting
         render()
         val newSession = DiagnosisSession(LoggingTransport(transport, ::logTraffic), vehicle)
@@ -289,12 +302,77 @@ class App(private val root: HTMLElement) {
         }
     }
 
+    /** Recorre todas las centralitas del perfil; la lista se va llenando en pantalla. */
+    fun scanAllModules() {
+        val current = session ?: return
+        if (moduleScanning) return
+        moduleResults = emptyList()
+        moduleScanning = true
+        render()
+        DebugLog.add("Escaneo completo: ${vehicle.modules.size} direcciones…")
+        scope.launch {
+            try {
+                current.scanModules().collect { result ->
+                    moduleResults = moduleResults + result
+                    DebugLog.add(
+                        "Escaneo: ${result.module.address} ${if (result.present) "responde" else "no responde"}" +
+                            (result.identity?.systemName?.let { " · $it" } ?: "") +
+                            " · ${result.faults.size} averías" + (result.error?.let { " · ERROR $it" } ?: ""),
+                    )
+                    render()
+                }
+            } catch (e: DiagnosisException) {
+                handleFailure(e, "Error en el escaneo")
+            } finally {
+                moduleScanning = false
+                render()
+            }
+        }
+    }
+
+    /** Borra las averías de una centralita y la vuelve a leer. */
+    fun clearModule(result: ModuleScanResult) {
+        val current = session ?: return
+        scope.launch {
+            try {
+                current.clearModuleFaults(result.module)
+                replaceModuleResult(current.rescanModule(result.module))
+                toast("Averías borradas en ${result.module.address}", "ok")
+                if (result.module == vehicle.engineEcu) diagnose()
+            } catch (e: DiagnosisException) {
+                handleFailure(e, "No se pudieron borrar las averías")
+            }
+        }
+    }
+
+    /** Borra las averías de todas las centralitas que tenían y repite el escaneo. */
+    fun clearAllModules() {
+        val current = session ?: return
+        val withFaults = moduleResults.filter { it.faults.isNotEmpty() }
+        scope.launch {
+            try {
+                withFaults.forEach { current.clearModuleFaults(it.module) }
+                toast("Averías borradas en ${plural(withFaults.size, "centralita", "centralitas")}", "ok")
+                scanAllModules()
+                diagnose()
+            } catch (e: DiagnosisException) {
+                handleFailure(e, "No se pudieron borrar las averías")
+            }
+        }
+    }
+
+    private fun replaceModuleResult(updated: ModuleScanResult) {
+        moduleResults = moduleResults.map { if (it.module == updated.module) updated else it }
+        render()
+    }
+
     fun disconnect() {
         DebugLog.add("Usuario: pulsa Desconectar")
         screenJob?.cancel()
         val current = session
         session = null
         report = null
+        moduleResults = emptyList()
         link = LinkState.Disconnected
         scope.launch { current?.disconnect() }
         render()

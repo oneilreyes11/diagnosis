@@ -1,13 +1,19 @@
 package com.sistemadiagnosis.core.vehicle
 
+import com.sistemadiagnosis.core.knowledge.Severity
 import com.sistemadiagnosis.core.obd.Vin
 
-/** Centralita direccionable por CAN de 11 bits. [address] es la dirección de diagnosis del fabricante. */
+/**
+ * Centralita direccionable por CAN de 11 bits. [address] es la dirección de
+ * diagnosis del fabricante; [importance] es la gravedad que se da a sus averías
+ * cuando el código no tiene ficha propia (un fallo en el airbag pesa más que en la radio).
+ */
 data class EcuDefinition(
     val address: String,
     val name: String,
     val requestId: Int,
     val responseId: Int,
+    val importance: Severity = Severity.MEDIUM,
 )
 
 data class EngineSpec(
@@ -32,6 +38,8 @@ data class VehicleProfile(
     val year: Int,
     val engine: EngineSpec,
     val engineEcu: EcuDefinition,
+    /** Centralitas que se buscan en el escaneo completo, en orden de dirección. */
+    val modules: List<EcuDefinition>,
     /** Prefijos de fabricante (WMI) válidos en el VIN. */
     val vinWmis: Set<String>,
     /** Código de modelo del grupo VAG: posiciones 7 y 8 del VIN. */

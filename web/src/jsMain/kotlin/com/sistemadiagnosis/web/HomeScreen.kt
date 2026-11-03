@@ -155,7 +155,19 @@ private fun App.renderDashboard(screen: HTMLElement, state: LinkState.Connected)
     }
 
     screen.div("card list-card") {
-        actionRow("alert", "Averías", current?.let {
+        actionRow(
+            "search", "Escaneo completo",
+            when {
+                moduleScanning -> "Leyendo centralitas… ${moduleResults.size}/${vehicle.modules.size}"
+                moduleResults.isEmpty() -> "Lee las averías de todas las centralitas"
+                else -> "${plural(moduleResults.count { it.present }, "centralita", "centralitas")} · " +
+                    moduleResults.sumOf { it.faults.size }.let { if (it == 0) "sin averías" else plural(it, "avería", "averías") }
+            },
+        ) {
+            navigate(Tab.FAULTS)
+            if (moduleResults.isEmpty()) scanAllModules()
+        }
+        actionRow("alert", "Averías del motor", current?.let {
             if (it.faults.isEmpty()) "Ninguna en el motor" else "${plural(it.faults.size, "código", "códigos")} con explicación"
         } ?: "Leyendo…") { navigate(Tab.FAULTS) }
         actionRow("activity", "Datos en vivo", "${PidCatalog.all.count { it.pid in info.supportedPids }} sensores disponibles") { navigate(Tab.LIVE) }
