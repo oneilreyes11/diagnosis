@@ -6,6 +6,9 @@ import org.w3c.dom.HTMLElement
 
 fun main() {
     registerServiceWorker()
+    // Errores no previstos también al registro, para poder verlos después de probar en el coche.
+    window.addEventListener("error", { event -> DebugLog.add("ERROR JS: ${event.asDynamic().message}") })
+    window.addEventListener("unhandledrejection", { event -> DebugLog.add("ERROR JS (promesa): ${event.asDynamic().reason}") })
     val root = document.getElementById("app")?.unsafeCast<HTMLElement>() ?: return
     App(root).start()
 }

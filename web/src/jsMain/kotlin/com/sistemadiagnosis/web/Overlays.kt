@@ -111,7 +111,13 @@ fun toast(message: String, tone: String = "") {
 }
 
 /** Error con título, detalle técnico y consejos. */
-fun showError(title: String, detail: String, hints: List<String> = emptyList(), action: Pair<String, () -> Unit>? = null) {
+fun showError(
+    title: String,
+    detail: String,
+    hints: List<String> = emptyList(),
+    action: Pair<String, () -> Unit>? = null,
+    shareLog: Boolean = false,
+) {
     showSheet(title) { close ->
         div("sheet-icon tone-danger") { icon("alert") }
         h2("sheet-title", title)
@@ -121,6 +127,7 @@ fun showError(title: String, detail: String, hints: List<String> = emptyList(), 
         p("technical", detail)
         div("sheet-actions") {
             if (action != null) button("btn btn-primary", action.first, { close(); action.second() })
+            if (shareLog) button("btn btn-ghost", "Compartir registro", { DebugLog.share() }) { icon("copy") }
             button("btn btn-ghost", "Cerrar", { close() })
         }
     }

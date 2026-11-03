@@ -51,6 +51,25 @@ internal fun App.renderMore(screen: HTMLElement) {
         }
     }
 
+    screen.div("card") {
+        h2("card-title", "Registro de conexión")
+        p(
+            "muted",
+            "Guarda cada paso del Bluetooth y todo lo que se envía y recibe, también entre intentos y aunque cierres la app. " +
+                "Prueba en el coche y luego compártelo de una vez.",
+        )
+        p("muted", if (DebugLog.isEmpty) "Vacío." else "${DebugLog.size} líneas guardadas.")
+        div("button-row") {
+            button("btn btn-primary btn-sm", "Compartir", { DebugLog.share() }) { icon("copy") }
+            button("btn btn-ghost btn-sm", "Copiar", { DebugLog.copy() }) { icon("copy") }
+            button("btn btn-ghost btn-sm", "Borrar", {
+                DebugLog.clear()
+                toast("Registro borrado")
+                render()
+            })
+        }
+    }
+
     screen.el("details", "card log-card") {
         el("summary", "log-summary") {
             icon("terminal")

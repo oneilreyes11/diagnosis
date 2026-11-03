@@ -198,10 +198,14 @@ class App(private val root: HTMLElement) {
             showBluetoothUnavailable()
             return
         }
+        DebugLog.startAttempt("Intento de conexión")
+        DebugLog.add("Abriendo el selector Bluetooth del navegador…")
         WebBluetooth.requestDevice().then({ device: dynamic ->
+            DebugLog.add("Selector: elegido '${device.name}'")
             scope.launch { connect(CallbackTransport(WebBluetoothLink(device), openTimeoutMs = 15_000), demo = false) }
             Unit
         }, { error: Throwable ->
+            DebugLog.add("Selector cerrado o fallido: ${error.asDynamic().name}: ${error.message}")
             // NotFoundError: el usuario cerró el selector sin elegir, a menudo porque su adaptador no aparecía.
             if (error.asDynamic().name == "NotFoundError") {
                 toast("¿No aparece tu adaptador? Puede ser Bluetooth clásico, que no funciona en iPhone", "warn")
@@ -222,17 +226,28 @@ class App(private val root: HTMLElement) {
         link = LinkState.Connecting
         render()
         val newSession = DiagnosisSession(LoggingTransport(transport, ::logTraffic), vehicle)
+        if (demo) DebugLog.startAttempt("Demostración")
+        DebugLog.add("Sesión: inicializando adaptador y conectando con el coche…")
         try {
             val info = newSession.connect()
+            DebugLog.add(
+                "Sesión: CONECTADO · adaptador='${info.adapter.version}' protocolo=${info.obdProtocol.displayName} " +
+                    "batería=${info.batteryVoltage} VIN=${info.vin?.value} coincide=${info.vehicleMatch} " +
+                    "PIDs=${info.supportedPids.size} avisos=${info.adapter.warnings}",
+            )
             session = newSession
             link = LinkState.Connected(info, demo)
             render()
             if (info.vehicleMatch == false) toast("El VIN leído no corresponde a tu ${vehicle.displayName}", "warn")
             diagnose()
         } catch (e: DiagnosisException) {
+            DebugLog.error("conectando (pantalla: No se pudo conectar)", e)
             link = LinkState.Disconnected
             render()
-            showError("No se pudo conectar", e.message ?: "Error desconocido", CONNECTION_HINTS, "Reintentar" to ::connectAdapter)
+            showError(
+                "No se pudo conectar", e.message ?: "Error desconocido", CONNECTION_HINTS,
+                "Reintentar" to ::connectAdapter, shareLog = !demo,
+            )
         }
     }
 
@@ -242,8 +257,10 @@ class App(private val root: HTMLElement) {
         scope.launch {
             scanning = true
             render()
+            DebugLog.add("Diagnosis: leyendo averías, monitores y datos congelados…")
             try {
                 report = current.runDiagnostics()
+                DebugLog.add("Diagnosis: terminada · ${report?.faults?.size} averías · monitores=${report?.monitorStatus != null}")
             } catch (e: DiagnosisException) {
                 handleFailure(e)
             } finally {
@@ -267,6 +284,7 @@ class App(private val root: HTMLElement) {
     }
 
     fun disconnect() {
+        DebugLog.add("Usuario: pulsa Desconectar")
         screenJob?.cancel()
         val current = session
         session = null
@@ -278,13 +296,17 @@ class App(private val root: HTMLElement) {
     }
 
     fun handleFailure(error: DiagnosisException, title: String = "Error en la lectura") {
+        DebugLog.error(if (error is TransportException) "conexión perdida (pantalla: Se perdió la conexión)" else title, error)
         if (error is TransportException) {
             session = null
             link = LinkState.Disconnected
             render()
-            showError("Se perdió la conexión", error.message ?: "", CONNECTION_HINTS, "Reconectar" to ::connectAdapter)
+            showError(
+                "Se perdió la conexión", error.message ?: "", CONNECTION_HINTS,
+                "Reconectar" to ::connectAdapter, shareLog = !isDemo,
+            )
         } else {
-            showError(title, error.message ?: "Error desconocido")
+            showError(title, error.message ?: "Error desconocido", shareLog = !isDemo)
         }
     }
 
