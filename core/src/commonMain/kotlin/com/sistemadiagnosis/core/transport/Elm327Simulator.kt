@@ -18,6 +18,8 @@ data class SimulatedVehicle(
     val pendingDtcs: List<String> = emptyList(),
     val permanentDtcs: List<String> = emptyList(),
     val engineRunning: Boolean = true,
+    /** Muchos clones ELM327 no contestan si se piden más PIDs de estos en una petición. */
+    val maxPidsPerRequest: Int = 6,
 ) {
     companion object {
         /** Demostración: Audi A3 8Y 1.5 TFSI con un fallo de encendido en el cilindro 2. */
@@ -72,11 +74,12 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
     private fun respond(command: String): String {
         receivedCommands += command
         val echoed = if (echo) command + eol() else ""
-        val reply = handle(command.uppercase().replace(" ", ""))
+        // null: el adaptador se queda callado, sin prompt (como un clon ante una petición que no admite).
+        val reply = handle(command.uppercase().replace(" ", "")) ?: return echoed
         return echoed + reply.joinToString(eol()) + eol() + eol() + ">"
     }
 
-    private fun handle(command: String): List<String> = when {
+    private fun handle(command: String): List<String>? = when {
         command == "ATZ" -> {
             echo = true; linefeeds = true; spaces = true; connectedProtocol = null
             listOf("", "ELM327 v1.5")
@@ -95,8 +98,9 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
         else -> handleObd(command)
     }
 
-    private fun handleObd(command: String): List<String> {
+    private fun handleObd(command: String): List<String>? {
         if (command.length % 2 != 0 || command.any { it !in "0123456789ABCDEF" }) return listOf("?")
+        if (command.startsWith("01") && (command.length - 2) / 2 > vehicle.maxPidsPerRequest) return null
         val searching = if (connectedProtocol == null) listOf("SEARCHING...") else emptyList()
         if (!vehicle.ignitionOn) return searching + "UNABLE TO CONNECT"
         connectedProtocol = vehicle.protocol

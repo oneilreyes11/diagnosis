@@ -2,8 +2,10 @@ package com.sistemadiagnosis.core.elm
 
 import com.sistemadiagnosis.core.transport.Transport
 import com.sistemadiagnosis.core.util.toHex
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeSource
 
@@ -49,11 +51,26 @@ class Elm327Driver(
         return AdapterInfo(version, warnings).also { adapterInfo = it }
     }
 
+    /**
+     * Envía un comando y espera su respuesta completa. Si quien lo pidió se cancela
+     * (por ejemplo, al salir de "En vivo"), el intercambio termina igualmente: si no,
+     * su respuesta llegaría tarde y se tomaría por la del comando siguiente.
+     */
     suspend fun send(command: String, timeoutMs: Long = timeouts.commandMs): ElmResponse =
         mutex.withLock {
-            transport.write("$command\r".encodeToByteArray())
-            ElmResponse.parse(command, readUntilPrompt(command, timeoutMs))
+            withContext(NonCancellable) {
+                discardStaleInput()
+                transport.write("$command\r".encodeToByteArray())
+                ElmResponse.parse(command, readUntilPrompt(command, timeoutMs))
+            }
         }
+
+    /** Descarta restos de respuestas anteriores (p.ej. una que llegó tras un timeout). */
+    private suspend fun discardStaleInput() {
+        repeat(MAX_STALE_CHUNKS) {
+            if (transport.read(0).isEmpty()) return
+        }
+    }
 
     suspend fun sendOrThrow(command: String, timeoutMs: Long = timeouts.commandMs): List<String> =
         when (val response = send(command, timeoutMs)) {
@@ -100,6 +117,7 @@ class Elm327Driver(
 
     private companion object {
         const val PROMPT = '>'
+        const val MAX_STALE_CHUNKS = 64
 
         /** Sin eco, sin saltos de línea, sin cabeceras y protocolo automático. */
         val REQUIRED_SETTINGS = listOf("ATE0", "ATL0", "ATH0", "ATSP0")

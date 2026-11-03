@@ -92,6 +92,15 @@ internal fun App.renderLive(screen: HTMLElement) {
         }
     }
 
+    val engineOffNotice = screen.div("notice notice-accent") {
+        hidden = true
+        icon("info")
+        div {
+            p("notice-title", "Motor parado")
+            p("notice-text", "Con el contacto puesto y el motor apagado, régimen, carga y caudal marcan 0. Arranca el motor para ver valores reales.")
+        }
+    }
+
     val tiles = mutableMapOf<Int, LiveTile>()
     screen.div("tile-grid") {
         shown.forEach { definition ->
@@ -119,6 +128,7 @@ internal fun App.renderLive(screen: HTMLElement) {
         try {
             current.liveData(shown.map { it.pid }).collect { sample ->
                 rate.textContent = "${formatNumber(sample.updatesPerSecond, 1)} act./s"
+                sample.values[0x0C]?.let { rpm -> engineOffNotice.hidden = rpm > 0.0 }
                 sample.values.forEach { (pid, value) -> tiles[pid]?.update(value) }
             }
         } catch (e: DiagnosisException) {

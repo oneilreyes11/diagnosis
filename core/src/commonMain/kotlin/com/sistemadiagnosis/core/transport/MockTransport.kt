@@ -25,6 +25,11 @@ class MockTransport(
         isOpen = false
     }
 
+    /** Bytes que llegan sin haberlos pedido, como la respuesta tardía de un comando anterior. */
+    fun injectLateResponse(text: String) {
+        pendingOutput.append(text)
+    }
+
     override suspend fun write(data: ByteArray) {
         if (!isOpen) throw TransportException("$displayName no está abierto")
         pendingOutput.append(simulator.feed(data.decodeToString()))

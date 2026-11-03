@@ -30,8 +30,8 @@ class ObdClient(private val elm: Elm327Driver) {
     var activeProtocol: ObdProtocol? = null
         private set
 
-    /** Algunas centralitas no aceptan varios PIDs en una petición; se detecta y se recuerda. */
-    private var multiPidSupported = true
+    /** PIDs por petición que admiten la centralita y el adaptador; se ajusta al primer fallo y se recuerda. */
+    private var pidsPerRequest = PIDS_PER_REQUEST_STEPS.first()
 
     /**
      * Establece comunicación con el vehículo. El ELM327 no busca protocolo hasta
@@ -100,20 +100,25 @@ class ObdClient(private val elm: Elm327Driver) {
     }
 
     /**
-     * Lee varios PIDs del servicio 01 y los devuelve decodificados. En CAN pide hasta
-     * seis por petición, lo que multiplica la velocidad de refresco.
+     * Lee varios PIDs del servicio 01 y los devuelve decodificados. En CAN pide varios
+     * por petición (6, o 3 o 2 si el adaptador no admite tantos), lo que multiplica
+     * la velocidad de refresco.
      */
     suspend fun readPids(pids: Collection<Int>): Map<Int, Double> {
         val readable = pids.filter { PidCatalog.byteCount(it) != null && PidCatalog[it] != null }
         val raw = mutableMapOf<Int, IntArray>()
-        if (multiPidSupported && activeProtocol?.isCan == true && readable.size > 1) {
-            for (chunk in readable.chunked(MAX_PIDS_PER_REQUEST)) {
+        if (activeProtocol?.isCan == true) {
+            var remaining = readable
+            while (remaining.size > 1 && pidsPerRequest > 1) {
+                val chunk = remaining.take(pidsPerRequest)
                 val result = readMultiple(chunk)
                 if (result == null) {
-                    multiPidSupported = false
-                    break
+                    // Muchos clones solo aceptan unos pocos PIDs por petición: se prueba con menos.
+                    pidsPerRequest = PIDS_PER_REQUEST_STEPS.firstOrNull { it < pidsPerRequest } ?: 1
+                    continue
                 }
                 raw += result
+                remaining = remaining.drop(chunk.size)
             }
         }
         for (pid in readable.filterNot { it in raw }) {
@@ -125,41 +130,56 @@ class ObdClient(private val elm: Elm327Driver) {
     /**
      * Petición genérica. Devuelve solo las respuestas positivas (primer byte =
      * servicio + 0x40); lista vacía si nadie respondió (NO DATA).
+     *
+     * Si llega una respuesta que no es de esta petición (el adaptador iba desfasado),
+     * se repite una vez; si vuelve a pasar, se avisa en lugar de dar un resultado falso.
      */
-    suspend fun request(service: Int, vararg parameters: Int): List<ByteArray> {
+    suspend fun request(
+        service: Int,
+        vararg parameters: Int,
+        timeoutMs: Long = elm.timeouts.commandMs,
+    ): List<ByteArray> {
         val command = (intArrayOf(service) + parameters).joinToString("") { it.toHex(2) }
-        val lines = when (val response = elm.send(command)) {
-            is ElmResponse.Ok -> response.lines
-            is ElmResponse.Error ->
-                if (response.error == ElmError.NO_DATA) return emptyList()
-                else throw ElmCommandException(command, response)
-        }
-        val messages = try {
-            ElmMessageParser.parse(lines)
-        } catch (e: IllegalArgumentException) {
-            throw ElmException("Respuesta no reconocida a '$command': ${lines.joinToString(" / ")}")
-        }
-        val positive = messages.filter { it.isNotEmpty() && (it[0].toInt() and 0xFF) == service + 0x40 }
-        if (positive.isEmpty()) {
+        repeat(2) { attempt ->
+            val lines = when (val response = elm.send(command, timeoutMs)) {
+                is ElmResponse.Ok -> response.lines
+                is ElmResponse.Error ->
+                    if (response.error == ElmError.NO_DATA) return emptyList()
+                    else throw ElmCommandException(command, response)
+            }
+            val messages = try {
+                ElmMessageParser.parse(lines)
+            } catch (e: IllegalArgumentException) {
+                throw ElmException("Respuesta no reconocida a '$command': ${lines.joinToString(" / ")}")
+            }
+            val positive = messages.filter { it.isNotEmpty() && (it[0].toInt() and 0xFF) == service + 0x40 }
+            if (positive.isNotEmpty()) return positive
             messages.firstOrNull { it.size >= 3 && (it[0].toInt() and 0xFF) == 0x7F && (it[2].toInt() and 0xFF) != 0x78 }
                 ?.let { throw ObdNegativeResponseException(service, it[2].toInt() and 0xFF) }
+            if (messages.isEmpty() || attempt == 1) {
+                if (messages.isEmpty()) return emptyList()
+                throw ElmException("El adaptador respondió a otra petición en lugar de '$command'")
+            }
         }
-        return positive
+        return emptyList()
     }
 
     /** Datos de un PID de los servicios 01 o 02 (este último con la trama 0). */
     private suspend fun readPidData(service: Int, pid: Int): IntArray? {
         val parameters = if (service == 0x02) intArrayOf(pid, 0x00) else intArrayOf(pid)
         val offset = 1 + parameters.size
-        val message = request(service, *parameters).firstOrNull { it.size > offset && (it[1].toInt() and 0xFF) == pid }
-            ?: return null
+        val matches = { message: ByteArray -> message.size > offset && (message[1].toInt() and 0xFF) == pid }
+        var messages = request(service, *parameters)
+        // Respuesta del mismo servicio pero de otro PID: era la de una petición anterior.
+        if (messages.isNotEmpty() && messages.none(matches)) messages = request(service, *parameters)
+        val message = messages.firstOrNull(matches) ?: return null
         return message.copyOfRange(offset, message.size).toUnsignedInts()
     }
 
-    /** null si la centralita no entiende peticiones con varios PIDs. */
+    /** null si la centralita no responde a tantos PIDs juntos. */
     private suspend fun readMultiple(pids: List<Int>): Map<Int, IntArray>? {
         val messages = try {
-            request(0x01, *pids.toIntArray())
+            request(0x01, *pids.toIntArray(), timeoutMs = MULTI_PID_TIMEOUT_MS)
         } catch (e: ElmException) {
             return null
         }
@@ -176,13 +196,16 @@ class ObdClient(private val elm: Elm327Driver) {
                 index += 1 + size
             }
         }
-        // Si solo ha respondido al primero, probablemente no admite varios a la vez.
-        return result.takeIf { it.size > 1 || pids.size == 1 }
+        // Si solo ha respondido al primero o trae PIDs no pedidos, no se fía de la respuesta.
+        return result.takeIf { (it.size > 1 || pids.size == 1) && it.keys.all { pid -> pid in pids } }
     }
 
     private fun ByteArray.toUnsignedInts() = IntArray(size) { this[it].toInt() and 0xFF }
 
     private companion object {
-        const val MAX_PIDS_PER_REQUEST = 6
+        val PIDS_PER_REQUEST_STEPS = listOf(6, 3, 2)
+
+        /** Una respuesta normal llega en ~150 ms; si un clon no admite la petición, se calla. */
+        const val MULTI_PID_TIMEOUT_MS = 800L
     }
 }
