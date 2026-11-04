@@ -18,7 +18,21 @@ data class SimulatedModule(
     val partNumber: String,
     val softwareVersion: String,
     val dtcs: List<SimulatedDtc> = emptyList(),
+    /** Contesta "respuesta pendiente" (7F 19 78) la primera vez que se le piden las averías. */
+    val pendingBeforeDtcs: Boolean = false,
 )
+
+/** Cómo atiende el motor (7E0) los servicios UDS. */
+enum class EngineUds {
+    /** Responde en la sesión normal. */
+    DEFAULT_SESSION,
+
+    /** Solo tras abrir la sesión extendida (10 03). */
+    EXTENDED_SESSION,
+
+    /** Solo OBD-II: rechaza UDS con "servicio no admitido" (7F xx 11). */
+    OBD_ONLY,
+}
 
 /** Vehículo que responde a través de [Elm327Simulator]. */
 data class SimulatedVehicle(
@@ -34,6 +48,12 @@ data class SimulatedVehicle(
     val maxPidsPerRequest: Int = 6,
     /** Centralitas UDS además del motor (que responde en 7E0 con sus averías OBD). */
     val modules: List<SimulatedModule> = emptyList(),
+    val engineUds: EngineUds = EngineUds.DEFAULT_SESSION,
+    /**
+     * Adaptador como el de Carly: tramas CAN en crudo (byte de control ISO-TP y
+     * relleno AA) aunque se pida ATCAF1, con espacios, y la tensión sin "V".
+     */
+    val rawCanFormatting: Boolean = false,
 ) {
     companion object {
         /**
@@ -90,6 +110,8 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
     /** Cabecera CAN actual (ATSH): 7DF es la petición funcional a todas las centralitas. */
     private var header = FUNCTIONAL_HEADER
     private val moduleDtcs = vehicle.modules.associate { it.requestId to it.dtcs.toMutableList() }
+    private val pendingAnswered = mutableSetOf<Int>()
+    private var engineExtendedSession = false
     private val start = TimeSource.Monotonic.markNow()
 
     /** Comandos recibidos, en orden. */
@@ -129,8 +151,9 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
         command == "ATH0" || command == "ATH1" -> ok {}
         command.startsWith("ATSH") -> ok { header = command.substring(4).toIntOrNull(16) ?: header }
         command.startsWith("ATCRA") || command == "ATAR" || command.startsWith("ATFC") -> ok {}
+        command.startsWith("ATAT") || command.startsWith("ATST") || command.startsWith("ATCAF") -> ok {}
         command.startsWith("ATSP") -> ok { connectedProtocol = null }
-        command == "ATRV" -> listOf(formatVoltage(vehicle.batteryVoltage))
+        command == "ATRV" -> listOf(formatVoltage(vehicle.batteryVoltage).let { if (vehicle.rawCanFormatting) it.dropLast(1) else it })
         command == "ATDPN" -> listOf(connectedProtocol?.let { "A${it.code}" } ?: "A0")
         command == "ATDP" -> listOf(connectedProtocol?.let { "AUTO, ${it.displayName}" } ?: "AUTO")
         command.startsWith("AT") -> listOf("?")
@@ -190,6 +213,17 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
         val module = vehicle.modules.firstOrNull { it.requestId == header }
         if (module == null && header != ENGINE_HEADER) return null
         val service = request[0]
+        if (service == 0x10) {
+            val session = request.getOrElse(1) { 0x01 }
+            if (module == null) {
+                if (vehicle.engineUds == EngineUds.OBD_ONLY) return listOf(0x7F, 0x10, 0x11)
+                engineExtendedSession = session == 0x03
+            }
+            return listOf(0x50, session, 0x00, 0x32, 0x01, 0xF4)
+        }
+        val engineRefuses = vehicle.engineUds == EngineUds.OBD_ONLY ||
+            (vehicle.engineUds == EngineUds.EXTENDED_SESSION && !engineExtendedSession)
+        if (module == null && engineRefuses) return listOf(0x7F, service, 0x11)
         return when (service) {
             0x3E -> listOf(0x7E, 0x00)
             0x22 -> {
@@ -199,6 +233,9 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
             }
             0x19 -> {
                 if (request.getOrNull(1) != 0x02) return listOf(0x7F, 0x19, 0x12)
+                if (module != null && module.pendingBeforeDtcs && pendingAnswered.add(module.requestId)) {
+                    return listOf(0x7F, 0x19, 0x78)
+                }
                 val mask = request.getOrElse(2) { 0xFF }
                 listOf(0x59, 0x02, 0xFF) + udsDtcs(module).filter { it.status and mask != 0 }
                     .flatMap { Dtc(it.code).toBytes().toList() + listOf(it.failureType, it.status) }
@@ -238,6 +275,7 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
     }
 
     private fun message(payload: List<Int>): List<String> {
+        if (vehicle.rawCanFormatting && vehicle.protocol.isCan) return rawFrames(payload)
         if (!vehicle.protocol.isCan) {
             // Fuera de CAN no hay multitrama: las averías llegan en líneas de 3.
             if (payload.size <= 7) return listOf(hex(*payload.toIntArray()))
@@ -248,6 +286,15 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
         val segments = listOf(payload.take(6)) + payload.drop(6).chunked(7) { it + List(7 - it.size) { 0 } }
         return listOf(payload.size.toHex(3)) +
             segments.mapIndexed { i, bytes -> (i % 16).toHex(1) + ":" + (if (spaces) " " else "") + hex(*bytes.toIntArray()) }
+    }
+
+    /** Tramas ISO-TP tal cual van por el bus: byte de control, datos y relleno AA hasta 8 bytes. */
+    private fun rawFrames(payload: List<Int>): List<String> {
+        fun frame(bytes: List<Int>) = (bytes + List(8 - bytes.size) { 0xAA }).joinToString(" ") { it.toHex(2) } + " "
+        if (payload.size <= 7) return listOf(frame(listOf(payload.size) + payload))
+        val frames = mutableListOf(frame(listOf(0x10 or (payload.size shr 8), payload.size and 0xFF) + payload.take(6)))
+        payload.drop(6).chunked(7).forEachIndexed { i, chunk -> frames += frame(listOf(0x20 or ((i + 1) % 16)) + chunk) }
+        return frames
     }
 
     private fun vinResponse(): List<String>? {

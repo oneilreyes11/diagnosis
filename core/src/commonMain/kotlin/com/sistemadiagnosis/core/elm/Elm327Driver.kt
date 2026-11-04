@@ -122,9 +122,14 @@ class Elm327Driver(
         /** Sin eco, sin saltos de línea, sin cabeceras y protocolo automático. */
         val REQUIRED_SETTINGS = listOf("ATE0", "ATL0", "ATH0", "ATSP0")
 
-        /** Quitar espacios (ATS0) ahorra ancho de banda; los ELM327 v1.0-1.2 no lo tienen. */
-        val OPTIONAL_SETTINGS = listOf("ATS0")
+        /**
+         * Quitar espacios (ATS0) ahorra ancho de banda; los ELM327 v1.0-1.2 no lo tienen.
+         * ATCAF1 (formato CAN automático) es el valor de fábrica, pero hay adaptadores que
+         * vienen sin él y dan las tramas en crudo (el parser también sabe leerlas).
+         */
+        val OPTIONAL_SETTINGS = listOf("ATS0", "ATCAF1")
 
-        val VOLTAGE = Regex("(\\d+(?:\\.\\d+)?)\\s*V", RegexOption.IGNORE_CASE)
+        /** "12.4V" o, en algunos adaptadores, "13.48" sin unidad. */
+        val VOLTAGE = Regex("(\\d+(?:\\.\\d+)?)\\s*V?", RegexOption.IGNORE_CASE)
     }
 }

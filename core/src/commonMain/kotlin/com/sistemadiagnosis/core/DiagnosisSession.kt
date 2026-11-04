@@ -11,6 +11,7 @@ import com.sistemadiagnosis.core.obd.DtcKind
 import com.sistemadiagnosis.core.obd.FreezeFrame
 import com.sistemadiagnosis.core.obd.MonitorStatus
 import com.sistemadiagnosis.core.obd.ObdClient
+import com.sistemadiagnosis.core.obd.ObdNegativeResponseException
 import com.sistemadiagnosis.core.obd.PidCatalog
 import com.sistemadiagnosis.core.obd.Vin
 import com.sistemadiagnosis.core.transport.MockTransport
@@ -195,13 +196,14 @@ class DiagnosisSession(
         }
     }
 
-    private suspend fun scanModule(module: EcuDefinition): ModuleScanResult =
-        try {
+    private suspend fun scanModule(module: EcuDefinition): ModuleScanResult {
+        var identity: ModuleIdentity? = null
+        return try {
             uds.select(module)
             if (!uds.isPresent()) {
                 ModuleScanResult(module, present = false, identity = null, faults = emptyList(), error = null)
             } else {
-                val identity = uds.readIdentity()
+                identity = uds.readIdentity()
                 val faults = uds.readDtcs().map { code ->
                     val description = DtcKnowledge.describe(code.dtc, vehicle)
                     // Sin ficha propia del código, pesa la importancia de la centralita (airbag, frenos…).
@@ -212,9 +214,20 @@ class DiagnosisSession(
             }
         } catch (e: TransportException) {
             throw e
+        } catch (e: ObdNegativeResponseException) {
+            val note = if (e.code == 0x11) {
+                "No admite la lectura de averías por UDS en esta dirección" +
+                    if (module == vehicle?.engineEcu) ". Sus averías de emisiones se leen por OBD-II." else "."
+            } else {
+                e.message
+            }
+            ModuleScanResult(module, present = true, identity = identity, faults = emptyList(), error = note)
         } catch (e: DiagnosisException) {
-            ModuleScanResult(module, present = true, identity = null, faults = emptyList(), error = e.message)
+            ModuleScanResult(module, present = true, identity = identity, faults = emptyList(), error = e.message)
+        } finally {
+            withContext(NonCancellable) { orNull { uds.leaveSession() } }
         }
+    }
 
     /**
      * Lee los datos pedidos en bucle mientras se recoja el flujo. Incluye los

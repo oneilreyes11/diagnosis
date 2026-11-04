@@ -7,6 +7,7 @@ import com.sistemadiagnosis.core.elm.ElmException
 import com.sistemadiagnosis.core.elm.ElmResponse
 import com.sistemadiagnosis.core.elm.ObdProtocol
 import com.sistemadiagnosis.core.util.toHex
+import kotlinx.coroutines.delay
 
 class ObdNegativeResponseException(val service: Int, val code: Int) :
     ElmException("El vehículo rechazó la petición ${service.toHex(2)}: ${describeNegativeResponse(code)}")
@@ -156,6 +157,13 @@ class ObdClient(private val elm: Elm327Driver) {
             if (positive.isNotEmpty()) return positive
             messages.firstOrNull { it.size >= 3 && (it[0].toInt() and 0xFF) == 0x7F && (it[2].toInt() and 0xFF) != 0x78 }
                 ?.let { throw ObdNegativeResponseException(service, it[2].toInt() and 0xFF) }
+            // Solo "respuesta pendiente" (7F xx 78): la centralita sigue trabajando. Se le da
+            // tiempo antes de repetir; repetir en el acto solo consigue un NO DATA.
+            if (messages.isNotEmpty() && messages.all { it.size >= 3 && (it[0].toInt() and 0xFF) == 0x7F }) {
+                if (attempt == 1) throw ElmException("La centralita no terminó de responder a '$command'")
+                delay(RESPONSE_PENDING_WAIT_MS)
+                return@repeat
+            }
             if (messages.isEmpty() || attempt == 1) {
                 if (messages.isEmpty()) return emptyList()
                 throw ElmException("El adaptador respondió a otra petición en lugar de '$command'")
@@ -207,5 +215,8 @@ class ObdClient(private val elm: Elm327Driver) {
 
         /** Una respuesta normal llega en ~150 ms; si un clon no admite la petición, se calla. */
         const val MULTI_PID_TIMEOUT_MS = 800L
+
+        /** Tiempo que se deja a una centralita que ha contestado "respuesta pendiente". */
+        const val RESPONSE_PENDING_WAIT_MS = 1_500L
     }
 }

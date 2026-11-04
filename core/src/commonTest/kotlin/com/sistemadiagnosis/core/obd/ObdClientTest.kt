@@ -27,7 +27,7 @@ class ObdClientTest {
 
         assertEquals("ELM327 v1.5", info.version)
         assertEquals(emptyList(), info.warnings)
-        assertEquals(listOf("ATZ", "ATE0", "ATL0", "ATH0", "ATSP0", "ATS0"), transport.receivedCommands)
+        assertEquals(listOf("ATZ", "ATE0", "ATL0", "ATH0", "ATSP0", "ATS0", "ATCAF1"), transport.receivedCommands)
     }
 
     @Test
