@@ -38,6 +38,9 @@ class UdsClient(private val elm: Elm327Driver, private val obd: ObdClient) {
     /** Sesión de diagnosis extendida abierta en la centralita actual. */
     private var extendedSession = false
 
+    /** La centralita actual ya rechazó la sesión extendida: no se vuelve a pedir en cada lectura. */
+    private var extendedRefused = false
+
     /**
      * Dirige las peticiones a [module]. Las respuestas largas (multitrama) exigen
      * contestar con un control de flujo dirigido a la propia centralita: el ELM327
@@ -52,6 +55,7 @@ class UdsClient(private val elm: Elm327Driver, private val obd: ObdClient) {
      */
     suspend fun select(module: EcuDefinition) {
         leaveSession()
+        extendedRefused = false
         if (!scanMode) {
             elm.send("ATAT0")
             elm.send("ATSTFF")
@@ -104,10 +108,11 @@ class UdsClient(private val elm: Elm327Driver, private val obd: ObdClient) {
         try {
             block()
         } catch (e: ObdNegativeResponseException) {
-            if (extendedSession || e.code !in SESSION_NRCS) throw e
+            if (extendedSession || extendedRefused || e.code !in SESSION_NRCS) throw e
             try {
                 obd.request(0x10, 0x03)
             } catch (sessionError: ObdNegativeResponseException) {
+                extendedRefused = true
                 throw e
             }
             extendedSession = true

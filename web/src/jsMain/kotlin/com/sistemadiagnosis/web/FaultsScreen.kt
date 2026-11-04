@@ -87,6 +87,9 @@ private fun App.renderModuleScan(screen: HTMLElement) {
                 el("ul", "bullets") { absent.forEach { el("li", "", "${it.module.address} · ${it.module.name}") } }
             }
         }
+        if (absent.size >= 3 && !moduleScanning && !isDemo || discovery.running || discovery.finished) {
+            this@renderModuleScan.renderDiscoveryCard(this)
+        }
 
         if (results.isNotEmpty() && !moduleScanning) {
             div("button-row") {

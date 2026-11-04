@@ -21,6 +21,7 @@ import com.sistemadiagnosis.core.transport.TransportException
 import com.sistemadiagnosis.core.uds.ModuleIdentity
 import com.sistemadiagnosis.core.uds.UdsClient
 import com.sistemadiagnosis.core.uds.UdsDtc
+import com.sistemadiagnosis.core.util.toHex
 import com.sistemadiagnosis.core.vehicle.EcuDefinition
 import com.sistemadiagnosis.core.vehicle.VehicleProfile
 import kotlinx.coroutines.NonCancellable
@@ -92,6 +93,12 @@ data class ModuleScanResult(
 data class DidReading(val did: Int, val data: ByteArray?, val nrc: Int?, val error: String?) {
     val found: Boolean get() = data != null
 }
+
+/** Centralita encontrada en la búsqueda de 29 bits: a qué ID se le pregunta, desde cuál contesta y qué dijo. */
+data class DiscoveryHit(val requestId: Int, val responseId: Int, val response: String)
+
+/** Progreso de la búsqueda: cuántas direcciones se han probado y, si la hay, la que acaba de contestar. */
+data class DiscoveryProgress(val probed: Int, val total: Int, val hit: DiscoveryHit?)
 
 /** Punto de entrada para las apps (web, iOS, Android, CLI). */
 class DiagnosisSession(
@@ -233,6 +240,55 @@ class DiagnosisSession(
                 withContext(NonCancellable) {
                     orNull { uds.leaveSession() }
                     orNull { uds.restore(profile.engineEcu) }
+                }
+            }
+        }
+    }
+
+    /**
+     * Busca centralitas con identificadores CAN de 29 bits (esquema 17FC00xx →
+     * 17FE00xx de los VAG recientes). En el A3 8Y solo el cambio contesta con los
+     * de 11 bits del escaneo, así que se prueba si el resto atiende así.
+     *
+     * Cada dirección recibe "10 01" (pasar a la sesión normal, en la que ya
+     * están): no cambia nada. Al terminar, el adaptador vuelve al protocolo del coche.
+     */
+    fun discoverExtendedModules(range: IntRange = 0x00..0xFF): Flow<DiscoveryProgress> = flow {
+        val profile = vehicle ?: return@flow
+        val total = range.count()
+        busMutex.withLock {
+            try {
+                withExpectedErrors {
+                    elm.sendOrThrow("ATSP7")
+                    elm.send("ATH1")
+                    elm.send("ATCP17")
+                    // Acepta cualquier respuesta 17FExxxx: filtro y máscara de 29 bits.
+                    elm.send("ATCF17FE0000")
+                    elm.send("ATCM1FFF0000")
+                }
+                var probed = 0
+                for (low in range) {
+                    val requestId = 0x17FC0000 or low
+                    val hit = withExpectedErrors {
+                        elm.sendOrThrow("ATSHFC00${low.toHex(2)}")
+                        val response = elm.send("1001")
+                        response.lines
+                            .map { it.replace(" ", "").uppercase() }
+                            .firstOrNull { it.length > 8 && it.startsWith("17FE") }
+                            ?.let { line -> DiscoveryHit(requestId, line.substring(0, 8).toLong(16).toInt(), line.substring(8)) }
+                    }
+                    probed++
+                    emit(DiscoveryProgress(probed, total, hit))
+                }
+            } finally {
+                withContext(NonCancellable) {
+                    orNull {
+                        elm.send("ATCRA")
+                        elm.send("ATCP18")
+                        elm.send("ATH0")
+                        elm.send("ATSP${connection?.obdProtocol?.code ?: profile.obdProtocol?.code ?: 0}")
+                        elm.addressEcu(profile.engineEcu.requestId, profile.engineEcu.responseId)
+                    }
                 }
             }
         }

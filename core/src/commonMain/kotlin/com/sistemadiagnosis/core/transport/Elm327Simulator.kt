@@ -62,6 +62,8 @@ data class SimulatedVehicle(
     val supportsProtocolHint: Boolean = true,
     /** Cuentakilómetros que da el PID A6. */
     val odometerKm: Double = 41_236.0,
+    /** Centralitas que contestan con CAN de 29 bits: ID de petición 17FC00xx (responden en 17FE00xx). */
+    val extendedModules: Set<Int> = emptySet(),
 ) {
     companion object {
         /**
@@ -91,6 +93,7 @@ data class SimulatedVehicle(
                 SimulatedModule(0x773, "J794 Infotainment", "8Y0035874", "0412"),
                 SimulatedModule(0x767, "J949 eCall", "5WA035284D", "0018"),
             ),
+            extendedModules = setOf(0x17FC0076, 0x17FC0080),
         )
     }
 }
@@ -118,6 +121,8 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
 
     /** Cabecera CAN actual (ATSH): 7DF es la petición funcional a todas las centralitas. */
     private var header = FUNCTIONAL_HEADER
+    private var priority = 0x18
+    private var protocol29 = false
     private val moduleDtcs = vehicle.modules.associate { it.requestId to it.dtcs.toMutableList() }
     private val pendingAnswered = mutableSetOf<Int>()
     private var engineExtendedSession = false
@@ -161,8 +166,11 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
         command.startsWith("ATSPA") && !vehicle.supportsProtocolHint -> listOf("?")
         command.startsWith("ATSH") -> ok { header = command.substring(4).toIntOrNull(16) ?: header }
         command.startsWith("ATCRA") || command == "ATAR" || command.startsWith("ATFC") -> ok {}
+        command.startsWith("ATCP") -> ok { priority = command.substring(4).toIntOrNull(16) ?: priority }
+        command.startsWith("ATCF") || command.startsWith("ATCM") -> ok {}
+        command == "ATSP7" -> ok { protocol29 = true; connectedProtocol = null }
         command.startsWith("ATAT") || command.startsWith("ATST") || command.startsWith("ATCAF") -> ok {}
-        command.startsWith("ATSP") -> ok { connectedProtocol = null }
+        command.startsWith("ATSP") -> ok { connectedProtocol = null; protocol29 = false }
         command == "ATRV" -> listOf(formatVoltage(vehicle.batteryVoltage).let { if (vehicle.rawCanFormatting) it.dropLast(1) else it })
         command == "ATDPN" -> listOf(connectedProtocol?.let { "A${it.code}" } ?: "A0")
         command == "ATDP" -> listOf(connectedProtocol?.let { "AUTO, ${it.displayName}" } ?: "AUTO")
@@ -183,6 +191,12 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
         if (!vehicle.ignitionOn) return searching + "UNABLE TO CONNECT"
         connectedProtocol = vehicle.protocol
         val bytes = command.chunked(2).map { it.toInt(16) }
+        if (protocol29) {
+            val id = (priority shl 24) or header
+            if (id !in vehicle.extendedModules || bytes[0] != 0x10) return listOf("NO DATA")
+            val response = (id and 0xFFFF) or 0x17FE0000
+            return listOf(response.toString(16).uppercase().padStart(8, '0') + "06" + hex(0x50, bytes.getOrElse(1) { 1 }, 0x00, 0x32, 0x01, 0xF4).replace(" ", ""))
+        }
         if (bytes[0] in UDS_SERVICES) return searching + (udsResponse(bytes)?.let(::message) ?: listOf("NO DATA"))
         val payload = when (bytes[0]) {
             0x01 -> currentData(bytes.drop(1))

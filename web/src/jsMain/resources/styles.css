@@ -915,3 +915,6 @@ p, h1, h2, h3 { margin: 0; }
 .service-item:first-of-type { padding-top: 0; }
 .service-title { font-weight: 600; margin-bottom: 2px; }
 .service-item .muted { font-size: 0.9rem; }
+
+.scan-card .discovery-card { border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 12px 0 0; display: grid; gap: 10px; background: none; }
+.discovery-card .card-title { margin-bottom: 0; }

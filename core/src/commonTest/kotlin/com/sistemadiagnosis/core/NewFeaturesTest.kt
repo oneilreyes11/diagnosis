@@ -136,4 +136,15 @@ class NewFeaturesTest {
         assertTrue(entry.allFaults.any { it.source == "17" && it.code == "U012100" })
         assertTrue(entry.allFaults.any { it.source == "01" && it.code == "P0302" })
     }
+
+    @Test
+    fun `busqueda de 29 bits encuentra centralitas y vuelve a OBD`() = runTest {
+        val session = DiagnosisSession(MockTransport(SimulatedVehicle.audiA3()), vehicle)
+        session.connect()
+        val progress = session.discoverExtendedModules().toList()
+        assertEquals(256, progress.size)
+        assertEquals(listOf(0x17FE0076, 0x17FE0080), progress.mapNotNull { it.hit?.responseId })
+        assertTrue(progress.first { it.hit != null }.hit!!.response.startsWith("065001"))
+        assertEquals(listOf("P0302", "P2181"), session.runDiagnostics().faults.map { it.dtc.code })
+    }
 }

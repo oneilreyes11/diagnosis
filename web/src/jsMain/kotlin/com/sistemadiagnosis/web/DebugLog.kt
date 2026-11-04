@@ -12,7 +12,7 @@ import kotlinx.browser.window
  */
 object DebugLog {
     private const val STORAGE_KEY = "diagnosis.debuglog"
-    private const val MAX_LINES = 3000
+    private const val MAX_LINES = 12000
 
     private val lines = ArrayDeque<String>()
     private var attemptStart = now()

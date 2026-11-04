@@ -84,6 +84,9 @@ class App(private val root: HTMLElement) {
     /** Explorador de valores de medición. */
     val explorer = ExplorerState()
 
+    /** Búsqueda de centralitas con CAN de 29 bits. */
+    val discovery = DiscoveryState()
+
     private lateinit var header: HTMLElement
     private lateinit var content: HTMLElement
     private lateinit var tabBar: HTMLElement
@@ -402,6 +405,7 @@ class App(private val root: HTMLElement) {
         moduleResults = emptyList()
         currentEntry = null
         explorer.stop()
+        discovery.stop()
         link = LinkState.Disconnected
         scope.launch { current?.disconnect() }
         render()
@@ -414,6 +418,7 @@ class App(private val root: HTMLElement) {
         if (error is TransportException && link == LinkState.Disconnected) return
         if (error is TransportException) {
             explorer.stop()
+            discovery.stop()
             session = null
             link = LinkState.Disconnected
             render()
