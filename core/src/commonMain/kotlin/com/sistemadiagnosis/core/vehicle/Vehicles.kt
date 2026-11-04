@@ -1,5 +1,6 @@
 package com.sistemadiagnosis.core.vehicle
 
+import com.sistemadiagnosis.core.elm.ObdProtocol
 import com.sistemadiagnosis.core.knowledge.Severity
 
 /** Vehículos soportados. Solo se añaden los que el propietario pide. */
@@ -39,6 +40,8 @@ object Vehicles {
             fuel = "Gasolina",
             features = listOf("Inyección directa", "Turbo", "Desconexión de cilindros (ACT)", "Filtro de partículas"),
         ),
+        // Confirmado en el coche real: ATDPN = A6.
+        obdProtocol = ObdProtocol.ISO_15765_4_CAN_11_500,
         engineEcu = ENGINE,
         // Direcciones de diagnosis UDS habituales del grupo VAG (MQB). Fuera del motor y el
         // cambio, la respuesta llega en petición + 0x6A. Las que no estén montadas no responden.

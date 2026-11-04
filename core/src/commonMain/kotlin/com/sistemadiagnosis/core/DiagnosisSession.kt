@@ -112,12 +112,15 @@ class DiagnosisSession(
     @Throws(DiagnosisException::class, CancellationException::class)
     suspend fun connect(): ConnectionInfo = withExpectedErrors {
         try {
-            val adapter = elm.initialize()
+            val adapter = elm.initialize(vehicle?.obdProtocol)
             val voltage = orNull { obd.readBatteryVoltage() }
             val protocol = obd.connect()
             val vin = orNull { obd.readVin() }
             val engine = vehicle?.engineEcu
-            if (engine != null && protocol.isCan) orNull { elm.addressEcu(engine.requestId, engine.responseId) }
+            if (engine != null && protocol.isCan) {
+                // Con una sola centralita contestando, el adaptador puede dejar de esperar tras su respuesta.
+                obd.singleResponder = orNull { elm.addressEcu(engine.requestId, engine.responseId) } != null
+            }
             val supported = obd.supportedPids()
             ConnectionInfo(adapter, voltage, protocol, vin, vehicle?.matches(vin), supported).also { connection = it }
         } catch (e: Throwable) {
@@ -269,7 +272,7 @@ class DiagnosisSession(
     @Throws(DiagnosisException::class, CancellationException::class)
     suspend fun quickScan(): QuickScanResult = withExpectedErrors {
         try {
-            val adapter = elm.initialize()
+            val adapter = elm.initialize(vehicle?.obdProtocol)
             val voltage = orNull { obd.readBatteryVoltage() }
             var protocol: ObdProtocol? = null
             var vin: Vin? = null

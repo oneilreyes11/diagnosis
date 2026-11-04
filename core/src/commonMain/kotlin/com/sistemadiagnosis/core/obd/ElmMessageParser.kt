@@ -23,7 +23,18 @@ object ElmMessageParser {
     private val lengthLine = Regex("^[0-9A-F]{3}$")
     private val segmentLine = Regex("^[0-9A-F]:([0-9A-F]*)$")
 
-    fun parse(lines: List<String>): List<ByteArray> {
+    /**
+     * Con [canIdFilter], las cabeceras CAN están activas (ATH1): cada línea empieza por
+     * el ID de 11 bits del emisor (3 cifras hex). Se descartan las de otros emisores y
+     * al resto se les quita la cabecera; las tramas quedan en crudo y se reensamblan aquí.
+     */
+    fun parse(lines: List<String>, canIdFilter: Int? = null): List<ByteArray> {
+        if (canIdFilter != null) {
+            val own = lines.map { it.replace(" ", "").uppercase() }
+                .filter { it.length > 3 && it.substring(0, 3).toIntOrNull(16) == canIdFilter }
+                .map { it.substring(3) }
+            return parse(own)
+        }
         val messages = mutableListOf<ByteArray>()
         var expectedLength = -1
         val segments = StringBuilder()

@@ -1,5 +1,6 @@
 package com.sistemadiagnosis.core.vehicle
 
+import com.sistemadiagnosis.core.elm.ObdProtocol
 import com.sistemadiagnosis.core.knowledge.Severity
 import com.sistemadiagnosis.core.obd.Vin
 
@@ -37,6 +38,8 @@ data class VehicleProfile(
     val platform: String,
     val year: Int,
     val engine: EngineSpec,
+    /** Protocolo OBD del vehículo, si se conoce: el adaptador lo prueba primero. */
+    val obdProtocol: ObdProtocol?,
     val engineEcu: EcuDefinition,
     /** Centralitas que se buscan en el escaneo completo, en orden de dirección. */
     val modules: List<EcuDefinition>,

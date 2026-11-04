@@ -26,8 +26,14 @@ class UdsClient(private val elm: Elm327Driver, private val obd: ObdClient) {
     /** null hasta probarlo; false si el adaptador no admite fijar el control de flujo. */
     private var manualFlowControl: Boolean? = null
 
-    /** Tiempo de espera fijo y largo activo (ver [select]). */
-    private var scanTiming = false
+    /** Modo escaneo activo: tiempos fijos y cabeceras (ver [select]). */
+    private var scanMode = false
+
+    /** Cabeceras CAN activas (ATH1): las respuestas se filtran por CAN ID en la app. */
+    private var headers = false
+
+    /** Datos y modo del control de flujo ya enviados; por centralita solo cambia la cabecera. */
+    private var flowControlConfigured = false
 
     /** Sesión de diagnosis extendida abierta en la centralita actual. */
     private var extendedSession = false
@@ -37,33 +43,44 @@ class UdsClient(private val elm: Elm327Driver, private val obd: ObdClient) {
      * contestar con un control de flujo dirigido a la propia centralita: el ELM327
      * solo lo hace solo para las direcciones OBD estándar (7E0-7E7).
      *
-     * También fija un tiempo de espera largo: con el adaptativo, el ELM327 aprende lo
-     * rápido que contesta el motor y da NO DATA antes de que llegue la respuesta de una
-     * centralita que va a través del gateway.
+     * La primera vez prepara el modo escaneo:
+     * - Tiempo de espera fijo y largo: con el adaptativo, el ELM327 aprende lo rápido
+     *   que contesta el motor y da NO DATA antes de que llegue la respuesta de una
+     *   centralita que va a través del gateway.
+     * - Cabeceras CAN (ATH1): hay adaptadores en los que ATCRA no filtra y se cuelan
+     *   respuestas de otras centralitas; con la cabecera se sabe quién envía cada trama.
      */
     suspend fun select(module: EcuDefinition) {
         leaveSession()
-        if (!scanTiming) {
+        if (!scanMode) {
             elm.send("ATAT0")
             elm.send("ATSTFF")
-            scanTiming = true
+            headers = elm.send("ATH1") is ElmResponse.Ok
+            scanMode = true
         }
         elm.addressEcu(module.requestId, module.responseId)
+        obd.responseIdFilter = if (headers) module.responseId else null
         if (manualFlowControl == false) return
-        val supported = listOf("ATFCSH${module.requestId.toHex(3)}", "ATFCSD300000", "ATFCSM1")
-            .all { elm.send(it) is ElmResponse.Ok }
+        val commands = listOf("ATFCSH${module.requestId.toHex(3)}") +
+            if (flowControlConfigured) emptyList() else listOf("ATFCSD300000", "ATFCSM1")
+        val supported = commands.all { elm.send(it) is ElmResponse.Ok }
         if (manualFlowControl == null) manualFlowControl = supported
+        flowControlConfigured = supported
     }
 
     /** Vuelve a la centralita del motor, al control de flujo y a los tiempos normales para OBD-II. */
     suspend fun restore(engine: EcuDefinition) {
         leaveSession()
         if (manualFlowControl == true) elm.send("ATFCSM0")
-        if (scanTiming) {
+        flowControlConfigured = false
+        if (scanMode) {
+            if (headers) elm.send("ATH0")
             elm.send("ATST32")
             elm.send("ATAT1")
-            scanTiming = false
+            headers = false
+            scanMode = false
         }
+        obd.responseIdFilter = null
         elm.addressEcu(engine.requestId, engine.responseId)
     }
 

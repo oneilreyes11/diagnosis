@@ -34,7 +34,12 @@ class Elm327Driver(
     var adapterInfo: AdapterInfo? = null
         private set
 
-    suspend fun initialize(): AdapterInfo {
+    /**
+     * Reinicia y configura el adaptador. Con [preferredProtocol] (el del vehículo, si
+     * se conoce) se prueba ese primero con búsqueda automática de respaldo (ATSPAx):
+     * evita la búsqueda completa, que en algunos adaptadores tarda unos 5 segundos.
+     */
+    suspend fun initialize(preferredProtocol: ObdProtocol? = null): AdapterInfo {
         if (!transport.isOpen) transport.open()
         // Descarta lo que el adaptador haya enviado al conectar (banners, prompts sueltos).
         transport.read(timeouts.drainMs)
@@ -45,6 +50,8 @@ class Elm327Driver(
             ?: sendOrThrow("ATI").firstOrNull().orEmpty()
 
         REQUIRED_SETTINGS.forEach { sendOrThrow(it) }
+        val protocolHinted = preferredProtocol != null && send("ATSPA${preferredProtocol.code}") is ElmResponse.Ok
+        if (!protocolHinted) sendOrThrow("ATSP0")
         val warnings = OPTIONAL_SETTINGS.mapNotNull { setting ->
             (send(setting) as? ElmResponse.Error)?.let { "$setting no soportado: ${it.error.description}" }
         }
@@ -119,8 +126,8 @@ class Elm327Driver(
         const val PROMPT = '>'
         const val MAX_STALE_CHUNKS = 64
 
-        /** Sin eco, sin saltos de línea, sin cabeceras y protocolo automático. */
-        val REQUIRED_SETTINGS = listOf("ATE0", "ATL0", "ATH0", "ATSP0")
+        /** Sin eco, sin saltos de línea y sin cabeceras; después se fija el protocolo. */
+        val REQUIRED_SETTINGS = listOf("ATE0", "ATL0", "ATH0")
 
         /**
          * Quitar espacios (ATS0) ahorra ancho de banda; los ELM327 v1.0-1.2 no lo tienen.

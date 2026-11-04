@@ -54,6 +54,12 @@ data class SimulatedVehicle(
      * relleno AA) aunque se pida ATCAF1, con espacios, y la tensión sin "V".
      */
     val rawCanFormatting: Boolean = false,
+    /** Como el adaptador "OBDII": ATCRA no filtra y se cuela una trama de otra centralita. */
+    val leakyReceiveFilter: Boolean = false,
+    /** Entiende el número de respuestas esperadas al final del comando (`010C1`). */
+    val supportsResponseCount: Boolean = true,
+    /** Entiende el protocolo preferido con búsqueda de respaldo (`ATSPA6`). */
+    val supportsProtocolHint: Boolean = true,
 ) {
     companion object {
         /**
@@ -99,6 +105,7 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
     private var echo = true
     private var linefeeds = true
     private var spaces = true
+    private var headers = false
     private var connectedProtocol: ObdProtocol? = null
 
     private val stored = vehicle.storedDtcs.toMutableList()
@@ -141,14 +148,15 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
 
     private fun handle(command: String): List<String>? = when {
         command == "ATZ" -> {
-            echo = true; linefeeds = true; spaces = true; connectedProtocol = null; header = FUNCTIONAL_HEADER
+            echo = true; linefeeds = true; spaces = true; headers = false; connectedProtocol = null; header = FUNCTIONAL_HEADER
             listOf("", "ELM327 v1.5")
         }
         command == "ATI" -> listOf("ELM327 v1.5")
         command == "ATE0" || command == "ATE1" -> ok { echo = command.last() == '1' }
         command == "ATL0" || command == "ATL1" -> ok { linefeeds = command.last() == '1' }
         command == "ATS0" || command == "ATS1" -> ok { spaces = command.last() == '1' }
-        command == "ATH0" || command == "ATH1" -> ok {}
+        command == "ATH0" || command == "ATH1" -> ok { headers = command.last() == '1' }
+        command.startsWith("ATSPA") && !vehicle.supportsProtocolHint -> listOf("?")
         command.startsWith("ATSH") -> ok { header = command.substring(4).toIntOrNull(16) ?: header }
         command.startsWith("ATCRA") || command == "ATAR" || command.startsWith("ATFC") -> ok {}
         command.startsWith("ATAT") || command.startsWith("ATST") || command.startsWith("ATCAF") -> ok {}
@@ -160,8 +168,14 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
         else -> handleObd(command)
     }
 
-    private fun handleObd(command: String): List<String>? {
-        if (command.length % 2 != 0 || command.any { it !in "0123456789ABCDEF" }) return listOf("?")
+    private fun handleObd(rawCommand: String): List<String>? {
+        if (rawCommand.any { it !in "0123456789ABCDEF" }) return listOf("?")
+        // Cifra suelta al final: número de respuestas esperadas (servicios 01 y 02).
+        val command = when {
+            rawCommand.length % 2 == 0 -> rawCommand
+            vehicle.supportsResponseCount && (rawCommand.startsWith("01") || rawCommand.startsWith("02")) -> rawCommand.dropLast(1)
+            else -> return listOf("?")
+        }
         if (command.startsWith("01") && (command.length - 2) / 2 > vehicle.maxPidsPerRequest) return null
         val searching = if (connectedProtocol == null) listOf("SEARCHING...") else emptyList()
         if (!vehicle.ignitionOn) return searching + "UNABLE TO CONNECT"
@@ -275,6 +289,12 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
     }
 
     private fun message(payload: List<Int>): List<String> {
+        if (headers && vehicle.protocol.isCan) {
+            // Con cabeceras el ELM327 muestra cada trama tal cual, precedida del CAN ID del emisor.
+            val own = rawFrames(payload).map { headerPrefix(responderId()) + it }
+            val stray = if (vehicle.leakyReceiveFilter) listOf(headerPrefix(0x7E9) + rawFrames(listOf(0x7F, 0x19, 0x78)).single()) else emptyList()
+            return stray + own
+        }
         if (vehicle.rawCanFormatting && vehicle.protocol.isCan) return rawFrames(payload)
         if (!vehicle.protocol.isCan) {
             // Fuera de CAN no hay multitrama: las averías llegan en líneas de 3.
@@ -286,6 +306,15 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
         val segments = listOf(payload.take(6)) + payload.drop(6).chunked(7) { it + List(7 - it.size) { 0 } }
         return listOf(payload.size.toHex(3)) +
             segments.mapIndexed { i, bytes -> (i % 16).toHex(1) + ":" + (if (spaces) " " else "") + hex(*bytes.toIntArray()) }
+    }
+
+    private fun headerPrefix(id: Int) = id.toHex(3) + if (spaces) " " else ""
+
+    /** CAN ID con que responde quien está direccionado: +8 en las OBD (7E0-7E7), +6A en el resto del grupo VAG. */
+    private fun responderId(): Int = when (header) {
+        FUNCTIONAL_HEADER -> 0x7E8
+        in 0x7E0..0x7E7 -> header + 8
+        else -> header + 0x6A
     }
 
     /** Tramas ISO-TP tal cual van por el bus: byte de control, datos y relleno AA hasta 8 bytes. */
