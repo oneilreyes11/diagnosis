@@ -14,6 +14,13 @@ import com.sistemadiagnosis.core.transport.MockTransport
 import com.sistemadiagnosis.core.transport.SimulatedVehicle
 import com.sistemadiagnosis.core.transport.Transport
 import com.sistemadiagnosis.core.transport.TransportException
+import com.sistemadiagnosis.core.history.HistoryAlert
+import com.sistemadiagnosis.core.history.HistoryAnalysis
+import com.sistemadiagnosis.core.history.HistoryEntry
+import com.sistemadiagnosis.core.history.HistoryFault
+import com.sistemadiagnosis.core.knowledge.Severity
+import com.sistemadiagnosis.core.pdf.ReportInput
+import com.sistemadiagnosis.core.pdf.ReportPdf
 import com.sistemadiagnosis.core.vehicle.VehicleProfile
 import com.sistemadiagnosis.core.vehicle.Vehicles
 import kotlinx.browser.window
@@ -28,12 +35,14 @@ sealed interface LinkState {
     data class Connected(val info: ConnectionInfo, val demo: Boolean) : LinkState
 }
 
-enum class Tab(val label: String, val icon: String, val slug: String) {
+enum class Tab(val label: String, val icon: String, val slug: String, val inBar: Boolean = true) {
     HOME("Inicio", "home", ""),
     FAULTS("Averías", "alert", "averias"),
     LIVE("En vivo", "activity", "en-vivo"),
     READINESS("ITV", "shield", "itv"),
     MORE("Más", "more", "mas"),
+    HISTORY("Historial", "clock", "historial", inBar = false),
+    EXPLORER("Valores de medición", "gauge", "medidas", inBar = false),
 }
 
 /** Estado de la app y acciones; las pantallas lo leen y lo pintan. */
@@ -66,6 +75,14 @@ class App(private val root: HTMLElement) {
     var screenJob: Job? = null
 
     val traffic = ArrayDeque<String>()
+
+    /** Lectura de esta conexión en el historial; se completa con la diagnosis y el escaneo. */
+    var currentEntry: HistoryEntry? = null
+        private set
+    private var demoHistory: List<HistoryEntry> = emptyList()
+
+    /** Explorador de valores de medición. */
+    val explorer = ExplorerState()
 
     private lateinit var header: HTMLElement
     private lateinit var content: HTMLElement
@@ -156,6 +173,8 @@ class App(private val root: HTMLElement) {
             Tab.LIVE -> renderLive(screen)
             Tab.READINESS -> renderReadiness(screen)
             Tab.MORE -> renderMore(screen)
+            Tab.HISTORY -> renderHistory(screen)
+            Tab.EXPLORER -> renderExplorer(screen)
         }
     }
 
@@ -184,7 +203,7 @@ class App(private val root: HTMLElement) {
     private fun renderTabs() {
         tabBar.clear()
         tabBar.div("tabbar-inner") {
-            Tab.entries.forEach { target ->
+            Tab.entries.filter { it.inBar }.forEach { target ->
                 button("tab${if (target == tab) " active" else ""}", null, { navigate(target) }) {
                     setAttribute("aria-label", target.label)
                     if (target == tab) setAttribute("aria-current", "page")
@@ -256,6 +275,9 @@ class App(private val root: HTMLElement) {
             )
             session = newSession
             link = LinkState.Connected(info, demo)
+            val now = nowMillis()
+            currentEntry = HistoryEntry.start(now.toLong().toString(), now)
+            if (demo) demoHistory = demoPastEntries(now)
             render()
             if (info.vehicleMatch == false) toast("El VIN leído no corresponde a tu ${vehicle.displayName}", "warn")
             diagnose()
@@ -278,8 +300,10 @@ class App(private val root: HTMLElement) {
             render()
             DebugLog.add("Diagnosis: leyendo averías, monitores y datos congelados…")
             try {
-                report = current.runDiagnostics()
-                DebugLog.add("Diagnosis: terminada · ${report?.faults?.size} averías · monitores=${report?.monitorStatus != null}")
+                val result = current.runDiagnostics()
+                report = result
+                DebugLog.add("Diagnosis: terminada · ${result.faults.size} averías · monitores=${result.monitorStatus != null}")
+                connection?.let { info -> updateEntry { it.withDiagnosis(info, result) } }
             } catch (e: DiagnosisException) {
                 handleFailure(e)
             } finally {
@@ -311,6 +335,7 @@ class App(private val root: HTMLElement) {
         render()
         DebugLog.add("Escaneo completo: ${vehicle.modules.size} direcciones…")
         scope.launch {
+            var complete = false
             try {
                 current.scanModules().collect { result ->
                     moduleResults = moduleResults + result
@@ -321,10 +346,12 @@ class App(private val root: HTMLElement) {
                     )
                     render()
                 }
+                complete = true
             } catch (e: DiagnosisException) {
                 handleFailure(e, "Error en el escaneo")
             } finally {
                 moduleScanning = false
+                if (complete) updateEntry { it.withModuleScan(moduleResults) }
                 render()
             }
         }
@@ -373,6 +400,8 @@ class App(private val root: HTMLElement) {
         session = null
         report = null
         moduleResults = emptyList()
+        currentEntry = null
+        explorer.stop()
         link = LinkState.Disconnected
         scope.launch { current?.disconnect() }
         render()
@@ -384,6 +413,7 @@ class App(private val root: HTMLElement) {
         // El aviso de corte y la lectura en curso pueden fallar a la vez: basta con un mensaje.
         if (error is TransportException && link == LinkState.Disconnected) return
         if (error is TransportException) {
+            explorer.stop()
             session = null
             link = LinkState.Disconnected
             render()
@@ -431,7 +461,91 @@ class App(private val root: HTMLElement) {
         if (url != null) row.icon("external", "icon icon-muted")
     }
 
+    // --- Historial ---------------------------------------------------------------
+
+    /** Lecturas de la más antigua a la más reciente (la de esta conexión incluida). */
+    val history: List<HistoryEntry>
+        get() {
+            val stored = if (isDemo) demoHistory else HistoryStore.all
+            val vin = connection?.vin?.value
+            // Solo este coche: si se conecta a otro, sus lecturas no se mezclan.
+            val own = stored.filter { vin == null || it.vin == null || it.vin == vin }
+            val current = currentEntry?.takeIf { it.milOn != null || it.batteryVoltage != null || it.moduleFaults != null }
+            return if (current == null) own else own.filter { it.id != current.id } + current
+        }
+
+    val historyAlerts: List<HistoryAlert>
+        get() = HistoryAnalysis.alerts(history, ::formatDate)
+
+    private fun updateEntry(change: (HistoryEntry) -> HistoryEntry) {
+        val updated = change(currentEntry ?: return)
+        currentEntry = updated
+        if (!isDemo) HistoryStore.save(updated)
+    }
+
+    fun deleteHistoryEntry(id: String) {
+        if (isDemo) demoHistory = demoHistory.filter { it.id != id } else HistoryStore.delete(id)
+        if (currentEntry?.id == id) currentEntry = null
+        render()
+    }
+
+    fun clearHistory() {
+        if (isDemo) demoHistory = emptyList() else HistoryStore.clear()
+        currentEntry = null
+        toast("Historial borrado")
+        render()
+    }
+
+    /** Lecturas inventadas para la demostración: la avería del cilindro 2 vuelve y la batería baja poco a poco. */
+    private fun demoPastEntries(now: Double): List<HistoryEntry> {
+        val day = 86_400_000.0
+        fun past(days: Int, volts: Double, km: Double, engine: List<String>, modules: List<HistoryFault>?) =
+            HistoryEntry.start("demo-$days", now - days * day).copy(
+                vin = SimulatedVehicle.audiA3().vin, batteryVoltage = volts, odometerKm = km, milOn = engine.isNotEmpty(),
+                monitorsComplete = 7, monitorsTotal = 7,
+                engineFaults = engine.map { HistoryFault("01", it, "Fallo de encendido en el cilindro 2", Severity.HIGH) },
+                moduleFaults = modules, modulesFound = modules?.let { 15 },
+            )
+        return listOf(
+            past(92, 12.70, 38_910.0, emptyList(), emptyList()),
+            past(61, 12.58, 39_820.0, listOf("P0302"), null),
+            past(33, 12.36, 40_560.0, emptyList(), emptyList()),
+            past(9, 12.28, 41_040.0, emptyList(), null),
+        )
+    }
+
     // --- Informe ----------------------------------------------------------------
+
+    /** Informe en PDF: se comparte (WhatsApp, correo, Archivos…) o se descarga. */
+    fun exportPdf() {
+        val current = report
+        if (current == null && moduleResults.isEmpty()) {
+            toast("Primero lee el coche", "warn")
+            return
+        }
+        val now = nowMillis()
+        val bytes = try {
+            ReportPdf.build(
+                ReportInput(
+                    vehicle = vehicle,
+                    connection = connection,
+                    report = current,
+                    modules = moduleResults,
+                    history = history.filter { it.id != currentEntry?.id },
+                    dateText = formatDateTime(now),
+                    demo = isDemo,
+                    formatDate = ::formatDate,
+                ),
+            )
+        } catch (e: Throwable) {
+            DebugLog.error("generando el PDF", e)
+            showError("No se pudo crear el informe", e.message ?: "Error desconocido")
+            return
+        }
+        val fileName = "Diagnosis-${vehicle.model}-${formatDate(now).replace('/', '-')}.pdf".replace(' ', '-')
+        DebugLog.add("Informe PDF: ${bytes.size} bytes")
+        sharePdf(bytes, fileName)
+    }
 
     fun shareReport() {
         val text = buildReportText() ?: return

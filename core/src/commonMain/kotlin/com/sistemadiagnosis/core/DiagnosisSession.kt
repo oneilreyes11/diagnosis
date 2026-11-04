@@ -85,6 +85,14 @@ data class ModuleScanResult(
     val highestSeverity: Severity? get() = faults.maxOfOrNull { it.severity }
 }
 
+/**
+ * Resultado de leer un identificador UDS en el explorador: los datos si la
+ * centralita lo ofrece, o el código de rechazo (NRC); [error] si no contestó.
+ */
+data class DidReading(val did: Int, val data: ByteArray?, val nrc: Int?, val error: String?) {
+    val found: Boolean get() = data != null
+}
+
 /** Punto de entrada para las apps (web, iOS, Android, CLI). */
 class DiagnosisSession(
     private val transport: Transport,
@@ -195,6 +203,37 @@ class DiagnosisSession(
                 uds.clearDtcs()
             } finally {
                 withContext(NonCancellable) { orNull { uds.restore(profile.engineEcu) } }
+            }
+        }
+    }
+
+    /**
+     * Explorador de valores de medición: lee uno a uno los identificadores pedidos
+     * de una centralita (servicio 22, solo lectura) y emite lo que contesta a cada
+     * uno. Sirve para descubrir qué datos ofrece cada centralita del coche real.
+     */
+    fun exploreDids(module: EcuDefinition, dids: List<Int>): Flow<DidReading> = flow {
+        val profile = vehicle ?: return@flow
+        busMutex.withLock {
+            try {
+                withExpectedErrors { uds.select(module) }
+                for (did in dids) {
+                    val reading = try {
+                        DidReading(did, withExpectedErrors { uds.readDid(did) }, null, null)
+                    } catch (e: TransportException) {
+                        throw e
+                    } catch (e: ObdNegativeResponseException) {
+                        DidReading(did, null, e.code, null)
+                    } catch (e: DiagnosisException) {
+                        DidReading(did, null, null, e.message)
+                    }
+                    emit(reading)
+                }
+            } finally {
+                withContext(NonCancellable) {
+                    orNull { uds.leaveSession() }
+                    orNull { uds.restore(profile.engineEcu) }
+                }
             }
         }
     }
@@ -316,7 +355,8 @@ class DiagnosisSession(
 
     companion object {
         private const val BARO = 0x33
-        private val TRIP_PIDS = listOf(0x21, 0x30, 0x31, 0x4D, 0x4E)
+        const val ODOMETER = 0xA6
+        private val TRIP_PIDS = listOf(0x21, 0x30, 0x31, 0x4D, 0x4E, ODOMETER)
 
         /** Sesión contra un vehículo simulado, para probar la app sin adaptador. */
         fun simulated(): DiagnosisSession = DiagnosisSession(MockTransport(SimulatedVehicle(), latencyMs = 30))

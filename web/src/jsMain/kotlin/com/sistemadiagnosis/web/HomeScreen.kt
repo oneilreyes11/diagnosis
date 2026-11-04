@@ -1,5 +1,6 @@
 package com.sistemadiagnosis.web
 
+import com.sistemadiagnosis.core.DiagnosisSession
 import com.sistemadiagnosis.core.knowledge.Severity
 import com.sistemadiagnosis.core.obd.DtcKind
 import com.sistemadiagnosis.core.obd.PidCatalog
@@ -48,6 +49,15 @@ private fun App.renderWelcome(screen: HTMLElement) {
         }
     }
 
+    val saved = history
+    if (saved.isNotEmpty()) {
+        screen.div("card list-card") {
+            actionRow("clock", "Historial", "${plural(saved.size, "lectura guardada", "lecturas guardadas")} · última el ${formatDate(saved.last().timestamp)}") {
+                navigate(Tab.HISTORY)
+            }
+        }
+    }
+
     screen.div("feature-grid") {
         feature("alert", "Averías explicadas", "Qué significa cada código, causas probables y qué hacer.")
         feature("activity", "Datos en vivo", "Más de 30 sensores del motor con gráfica en tiempo real.")
@@ -87,6 +97,7 @@ private fun App.renderConnecting(screen: HTMLElement) {
 private fun App.renderDashboard(screen: HTMLElement, state: LinkState.Connected) {
     val current = report
     val info = state.info
+    val odometer = current?.tripData?.get(DiagnosisSession.ODOMETER)
 
     if (state.demo) {
         screen.div("notice notice-accent") {
@@ -138,6 +149,17 @@ private fun App.renderDashboard(screen: HTMLElement, state: LinkState.Connected)
         }
     }
 
+    // Avisos del historial: averías que vuelven, batería que baja.
+    val alerts = if (current != null) historyAlerts else emptyList()
+    if (alerts.isNotEmpty()) {
+        screen.div("alert-list") {
+            alerts.take(2).forEach { alertCard(it) }
+            if (alerts.size > 2) {
+                button("btn btn-ghost btn-sm", "Ver ${plural(alerts.size - 2, "aviso más", "avisos más")}", { navigate(Tab.HISTORY) })
+            }
+        }
+    }
+
     val status = current?.monitorStatus
     screen.div("metric-grid") {
         metric(
@@ -152,6 +174,10 @@ private fun App.renderDashboard(screen: HTMLElement, state: LinkState.Connected)
             info.batteryVoltage?.let { "${formatNumber(it, 1)} V" } ?: "—",
             info.batteryVoltage?.let { if (it < 12.2) "warn" else "ok" } ?: "",
         )
+        if (odometer != null) {
+            metric("Kilómetros", formatThousands(odometer), "")
+            metric("Km desde el borrado", current?.tripData?.get(0x31)?.let { formatThousands(it) } ?: "—", "")
+        }
     }
 
     screen.div("card list-card") {
@@ -174,7 +200,15 @@ private fun App.renderDashboard(screen: HTMLElement, state: LinkState.Connected)
         actionRow("shield", "Preparación ITV", status?.let {
             if (it.allComplete) "Todos los monitores completos" else "${plural(it.incomplete.size, "monitor pendiente", "monitores pendientes")}"
         } ?: "Leyendo…") { navigate(Tab.READINESS) }
-        if (current != null) actionRow("share", "Compartir informe", "Envíalo a tu taller o guárdalo") { shareReport() }
+        actionRow("clock", "Historial", "${plural(history.size, "lectura", "lecturas")} · averías que vuelven y batería") { navigate(Tab.HISTORY) }
+        actionRow("gauge", "Valores de medición", "Explorador de datos de cada centralita") { navigate(Tab.EXPLORER) }
+    }
+
+    screen.div("button-row") {
+        button("btn btn-primary", "Informe PDF", { exportPdf() }) {
+            icon("share")
+            if (current == null) setAttribute("disabled", "")
+        }
     }
 
     screen.div("button-row") {

@@ -60,6 +60,8 @@ data class SimulatedVehicle(
     val supportsResponseCount: Boolean = true,
     /** Entiende el protocolo preferido con búsqueda de respaldo (`ATSPA6`). */
     val supportsProtocolHint: Boolean = true,
+    /** Cuentakilómetros que da el PID A6. */
+    val odometerKm: Double = 41_236.0,
 ) {
     companion object {
         /**
@@ -242,8 +244,10 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
             0x3E -> listOf(0x7E, 0x00)
             0x22 -> {
                 val did = (request.getOrElse(1) { 0 } shl 8) or request.getOrElse(2) { 0 }
-                val text = identity(did, module) ?: return listOf(0x7F, 0x22, 0x31)
-                listOf(0x62, did shr 8, did and 0xFF) + text.map { it.code }
+                val data = identity(did, module)?.map { it.code }
+                    ?: DEMO_DIDS[module?.requestId ?: ENGINE_HEADER]?.get(did)
+                    ?: return listOf(0x7F, 0x22, 0x31)
+                listOf(0x62, did shr 8, did and 0xFF) + data
             }
             0x19 -> {
                 if (request.getOrNull(1) != 0x02) return listOf(0x7F, 0x19, 0x12)
@@ -409,6 +413,7 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
         0x4E -> u16(if (monitorsReset) 0.0 else 1980.0)
         0x5C -> u8(s.oil + 40)
         0x5E -> u16(s.fuelRate * 20)
+        0xA6 -> u32(vehicle.odometerKm * 10)
         else -> null
     }
 
@@ -452,9 +457,15 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
         const val ENGINE_HEADER = 0x7E0
         val UDS_SERVICES = setOf(0x10, 0x14, 0x19, 0x22, 0x3E)
 
+        /** Identificadores inventados para que el explorador de la demostración encuentre algo. */
+        val DEMO_DIDS: Map<Int, Map<Int, List<Int>>> = mapOf(
+            ENGINE_HEADER to mapOf(0x1004 to listOf(0x0B, 0x7C), 0x100A to listOf(0x00, 0x5F), 0x1021 to listOf(0x30, 0x2E, 0x39)),
+            0x714 to mapOf(0x2203 to listOf(0x00, 0xA1, 0x0C), 0x2216 to listOf(0x01, 0x2C)),
+        )
+
         val CURRENT_PIDS = setOf(
             0x01, 0x04, 0x05, 0x06, 0x07, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x15, 0x1F, 0x21, 0x23, 0x2F,
-            0x30, 0x31, 0x33, 0x34, 0x3C, 0x42, 0x43, 0x44, 0x46, 0x49, 0x4C, 0x4D, 0x4E, 0x5C, 0x5E,
+            0x30, 0x31, 0x33, 0x34, 0x3C, 0x42, 0x43, 0x44, 0x46, 0x49, 0x4C, 0x4D, 0x4E, 0x5C, 0x5E, 0xA6,
         )
         val FREEZE_PIDS = setOf(0x02, 0x04, 0x05, 0x06, 0x07, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x33, 0x42, 0x5C)
 
@@ -467,6 +478,10 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
 
         fun clampByte(value: Double) = value.roundToInt().coerceIn(0, 255)
         fun u8(value: Double) = intArrayOf(clampByte(value))
+        fun u32(value: Double): IntArray {
+            val raw = value.toLong().coerceIn(0, 0xFFFFFFFFL)
+            return intArrayOf((raw shr 24).toInt() and 0xFF, (raw shr 16).toInt() and 0xFF, (raw shr 8).toInt() and 0xFF, raw.toInt() and 0xFF)
+        }
         fun u16(value: Double): IntArray {
             val raw = value.roundToInt().coerceIn(0, 0xFFFF)
             return intArrayOf(raw shr 8, raw and 0xFF)

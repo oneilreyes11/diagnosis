@@ -144,6 +144,19 @@ class UdsClient(private val elm: Elm327Driver, private val obd: ObdClient) {
         return response.firstOrNull { it.size >= 3 && it[1].toInt() == 0x02 }?.let(UdsDtc::parseReport).orEmpty()
     }
 
+    /**
+     * Lee un identificador (servicio 22, solo lectura). Devuelve sus datos o lanza
+     * [ObdNegativeResponseException] si la centralita no lo ofrece.
+     */
+    suspend fun readDid(did: Int): ByteArray {
+        val response = withSessionFallback { obd.request(0x22, did shr 8, did and 0xFF) }
+        val match = response.firstOrNull {
+            it.size >= 3 && (it[0].toInt() and 0xFF) == 0x62 &&
+                (it[1].toInt() and 0xFF) == did shr 8 && (it[2].toInt() and 0xFF) == did and 0xFF
+        } ?: throw DiagnosisException("Respuesta inesperada al leer ${did.toHex(4)}")
+        return match.copyOfRange(3, match.size)
+    }
+
     /** Borra la memoria de averías de la centralita seleccionada (14 FF FF FF). */
     suspend fun clearDtcs() {
         obd.request(0x14, 0xFF, 0xFF, 0xFF)

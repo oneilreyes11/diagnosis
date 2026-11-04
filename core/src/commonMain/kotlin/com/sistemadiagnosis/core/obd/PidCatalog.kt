@@ -143,6 +143,9 @@ object PidCatalog {
         PidDefinition(0x4D, "Minutos con el testigo encendido", "min", PidCategory.TRIP,
             "Tiempo de motor en marcha con el testigo encendido.",
             0.0, 65535.0, 0, 2) { (it[0] * 256 + it[1]).toDouble() },
+        PidDefinition(0xA6, "Cuentakilómetros", "km", PidCategory.TRIP,
+            "Kilómetros totales del coche según la centralita del motor. Solo lo ofrecen algunos coches recientes.",
+            0.0, 999999.0, 0, 4) { ((it[0].toLong() shl 24) or (it[1].toLong() shl 16) or (it[2].toLong() shl 8) or it[3].toLong()) / 10.0 },
     )
 
     private val byPid = definitions.associateBy { it.pid }

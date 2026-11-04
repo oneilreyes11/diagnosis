@@ -51,6 +51,37 @@ internal fun App.renderMore(screen: HTMLElement) {
         }
     }
 
+    screen.div("card list-card") {
+        actionRow("clock", "Historial", "${plural(history.size, "lectura guardada", "lecturas guardadas")}") { navigate(Tab.HISTORY) }
+        actionRow("gauge", "Valores de medición", "Explorador de datos de cada centralita (solo lectura)") { navigate(Tab.EXPLORER) }
+        actionRow("share", "Informe PDF", "Para el taller o para vender el coche") { exportPdf() }
+    }
+
+    screen.div("card") {
+        h2("card-title", "Funciones de servicio")
+        div("service-item") {
+            p("service-title", "Poner a cero el aviso de servicio")
+            p(
+                "muted",
+                "En el A3 8Y se hace desde el propio coche, sin herramientas: en el MMI, menú Vehículo › Servicio y controles › " +
+                    "Intervalos de servicio (los nombres cambian un poco según la versión del software). Si la opción no aparece, lo hace el taller.",
+            )
+        }
+        div("service-item") {
+            p("service-title", "Borrar averías")
+            p("muted", "Disponible en Averías: del motor por OBD-II y de cada centralita tras el escaneo completo.")
+        }
+        div("service-item") {
+            p("service-title", "Lo que no hace esta app")
+            p(
+                "muted",
+                "Reset de servicio por diagnosis, ajustes básicos, adaptaciones y codificaciones: en tu A3 son escrituras en centralitas " +
+                    "protegidas por la protección de diagnosis (SFD) de Volkswagen. Sin su desbloqueo oficial la centralita las rechaza, " +
+                    "y escribir a ciegas puede dejar el coche mal configurado. Aquí todo es de lectura, salvo borrar averías.",
+            )
+        }
+    }
+
     screen.div("card") {
         h2("card-title", "Registro de conexión")
         p(
@@ -91,9 +122,10 @@ internal fun App.renderMore(screen: HTMLElement) {
         h2("card-title", "Acerca de")
         el("ul", "check-list") {
             el("li", "", "Diagnóstico de la centralita del motor por OBD-II (SAE J1979): averías, datos en vivo, datos congelados y monitores de emisiones.")
+            el("li", "", "Escaneo de todas las centralitas por UDS, historial de lecturas e informe en PDF.")
             el("li", "", "Codificación y adaptaciones no disponibles: tu A3 lleva protección de diagnosis (SFD) que solo Volkswagen puede desbloquear.")
             el("li", "", "Orientativo: no sustituye la revisión de un profesional.")
         }
-        p("muted version", "Diagnosis · fase 2")
+        p("muted version", "Diagnosis · fase 4")
     }
 }

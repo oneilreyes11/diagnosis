@@ -182,6 +182,10 @@ private fun App.showModuleDetail(result: ModuleScanResult) {
         }
 
         div("sheet-actions") {
+            button("btn btn-ghost", "Explorar valores de medición", {
+                close()
+                openExplorer(result.module)
+            }) { icon("gauge") }
             if (result.faults.isNotEmpty()) {
                 button("btn btn-danger-ghost", "Borrar averías de esta centralita", {
                     close()
