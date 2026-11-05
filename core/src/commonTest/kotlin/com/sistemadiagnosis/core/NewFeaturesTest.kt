@@ -141,10 +141,12 @@ class NewFeaturesTest {
     fun `busqueda de 29 bits encuentra centralitas y vuelve a OBD`() = runTest {
         val session = DiagnosisSession(MockTransport(SimulatedVehicle.audiA3()), vehicle)
         session.connect()
-        val progress = session.discoverExtendedModules().toList()
-        assertEquals(256, progress.size)
-        assertEquals(listOf(0x17FE0076, 0x17FE0080), progress.mapNotNull { it.hit?.responseId })
-        assertTrue(progress.first { it.hit != null }.hit!!.response.startsWith("065001"))
+        val progress = session.discoverModules().toList()
+        assertEquals(255 + 1 + 256, progress.size)
+        val hits = progress.mapNotNull { it.hit?.responseId }
+        assertTrue(0x77E in hits, "cuadro en 11 bits: $hits")
+        assertTrue(hits.containsAll(listOf(0x17FE0076, 0x17FE0080)))
+        assertTrue(progress.first { it.hit?.responseId == 0x17FE0076 }.hit!!.response.startsWith("065001"))
         assertEquals(listOf("P0302", "P2181"), session.runDiagnostics().faults.map { it.dtc.code })
     }
 }

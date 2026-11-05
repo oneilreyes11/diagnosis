@@ -12,7 +12,7 @@ import org.w3c.dom.HTMLElement
 class DiscoveryState {
     var running = false
     var probed = 0
-    var total = 256
+    var total = 512
     var hits: List<DiscoveryHit> = emptyList()
     var finished = false
     var job: Job? = null
@@ -31,7 +31,7 @@ internal fun App.renderDiscoveryCard(container: HTMLElement) {
         p(
             "muted",
             "En tu A3 solo el cambio responde con las direcciones habituales. Los VAG más nuevos pueden usar otras " +
-                "(CAN de 29 bits). Esta prueba pregunta en 256 direcciones con una orden inofensiva y apunta las que contestan. Tarda alrededor de 1 minuto.",
+                "o necesitar otro tipo de dirección. Esta prueba pregunta en unas 500 direcciones con una orden inofensiva y apunta las que contestan. Tarda 1-2 minutos.",
         )
         if (state.running || state.finished) {
             div("progress") { div("progress-fill") { setAttribute("style", "width:${state.probed * 100 / state.total}%") } }
@@ -41,9 +41,10 @@ internal fun App.renderDiscoveryCard(container: HTMLElement) {
             div("module-list") {
                 state.hits.forEach { hit ->
                     div("did-row") {
-                        span("module-address did-id", (hit.requestId and 0xFF).toHex(2))
+                        val wide = hit.requestId > 0xFFF
+                        span("module-address did-id", if (wide) (hit.requestId and 0xFF).toHex(2) else hit.requestId.toHex(3))
                         div("action-text") {
-                            p("did-hex mono", "${hit.requestId.toHex(8)} → ${hit.responseId.toHex(8)}")
+                            p("did-hex mono", "${hit.requestId.toHex(if (wide) 8 else 3)} → ${hit.responseId.toHex(if (hit.responseId > 0xFFF) 8 else 3)}")
                             p("action-detail mono", hit.response)
                         }
                     }
@@ -75,20 +76,21 @@ private fun App.startDiscovery() {
     state.probed = 0
     state.hits = emptyList()
     render()
-    DebugLog.add("Búsqueda 29 bits: empezando (17FC0000-17FC00FF, petición 10 01)")
+    DebugLog.add("Búsqueda: empezando (11 bits 700-7FF y 29 bits 17FC00xx, petición 10 01)")
     state.job = scope.launch {
         try {
-            current.discoverExtendedModules().collect { progress ->
+            current.discoverModules().collect { progress ->
                 state.probed = progress.probed
                 state.total = progress.total
+                progress.note?.let { DebugLog.add("Búsqueda: $it") }
                 progress.hit?.let { hit ->
                     state.hits = state.hits + hit
-                    DebugLog.add("Búsqueda 29 bits: ${hit.requestId.toHex(8)} contesta desde ${hit.responseId.toHex(8)}: ${hit.response}")
+                    DebugLog.add("Búsqueda: ${hit.requestId.toHex(if (hit.requestId > 0xFFF) 8 else 3)} contesta desde ${hit.responseId.toHex(if (hit.responseId > 0xFFF) 8 else 3)}: ${hit.response}")
                 }
                 if (progress.hit != null || progress.probed % 8 == 0) render()
             }
             state.finished = true
-            DebugLog.add("Búsqueda 29 bits: terminada · ${state.hits.size} contestan")
+            DebugLog.add("Búsqueda: terminada · ${state.hits.size} contestan")
         } catch (e: DiagnosisException) {
             handleFailure(e, "Error en la búsqueda")
         } finally {

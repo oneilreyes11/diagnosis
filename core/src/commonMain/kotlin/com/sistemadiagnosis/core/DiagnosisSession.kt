@@ -2,6 +2,8 @@ package com.sistemadiagnosis.core
 
 import com.sistemadiagnosis.core.elm.AdapterInfo
 import com.sistemadiagnosis.core.elm.Elm327Driver
+import com.sistemadiagnosis.core.elm.ElmError
+import com.sistemadiagnosis.core.elm.ElmResponse
 import com.sistemadiagnosis.core.elm.ObdProtocol
 import com.sistemadiagnosis.core.knowledge.DtcDescription
 import com.sistemadiagnosis.core.knowledge.DtcKnowledge
@@ -98,7 +100,12 @@ data class DidReading(val did: Int, val data: ByteArray?, val nrc: Int?, val err
 data class DiscoveryHit(val requestId: Int, val responseId: Int, val response: String)
 
 /** Progreso de la búsqueda: cuántas direcciones se han probado y, si la hay, la que acaba de contestar. */
-data class DiscoveryProgress(val probed: Int, val total: Int, val hit: DiscoveryHit?)
+data class DiscoveryProgress(val probed: Int, val total: Int, val hit: DiscoveryHit?, val note: String? = null)
+
+/** Último resultado de la prueba de 29 bits (para el registro). */
+internal object DebugLog29 {
+    var last: String = ""
+}
 
 /** Punto de entrada para las apps (web, iOS, Android, CLI). */
 class DiagnosisSession(
@@ -246,39 +253,62 @@ class DiagnosisSession(
     }
 
     /**
-     * Busca centralitas con identificadores CAN de 29 bits (esquema 17FC00xx →
-     * 17FE00xx de los VAG recientes). En el A3 8Y solo el cambio contesta con los
-     * de 11 bits del escaneo, así que se prueba si el resto atiende así.
+     * Busca qué centralitas contestan y en qué identificadores CAN, porque en el
+     * A3 8Y solo el cambio responde en los del escaneo:
+     *
+     * 1. Recorre las peticiones de 11 bits 700-7FF (salvo la funcional 7DF) sin
+     *    filtro de recepción, con las cabeceras visibles, para ver quién contesta.
+     * 2. Comprueba si el adaptador puede enviar tramas de 29 bits (petición OBD
+     *    funcional 18DB33F1) y, si puede, prueba el esquema 17FC00xx → 17FE00xx.
      *
      * Cada dirección recibe "10 01" (pasar a la sesión normal, en la que ya
      * están): no cambia nada. Al terminar, el adaptador vuelve al protocolo del coche.
      */
-    fun discoverExtendedModules(range: IntRange = 0x00..0xFF): Flow<DiscoveryProgress> = flow {
+    fun discoverModules(): Flow<DiscoveryProgress> = flow {
         val profile = vehicle ?: return@flow
-        val total = range.count()
+        val shortIds = (0x700..0x7FF).filter { it != 0x7DF }
+        val extendedIds = (0x00..0xFF).map { 0x17FC0000 or it }
+        val total = shortIds.size + 1 + extendedIds.size
+        var probed = 0
         busMutex.withLock {
             try {
                 withExpectedErrors {
-                    elm.sendOrThrow("ATSP7")
                     elm.send("ATH1")
-                    elm.send("ATCP17")
-                    // Acepta cualquier respuesta 17FExxxx: filtro y máscara de 29 bits.
-                    elm.send("ATCF17FE0000")
-                    elm.send("ATCM1FFF0000")
+                    // Acepta cualquier respuesta 7xx: filtro y máscara de 11 bits.
+                    elm.send("ATCF700")
+                    elm.send("ATCM700")
                 }
-                var probed = 0
-                for (low in range) {
-                    val requestId = 0x17FC0000 or low
+                for (requestId in shortIds) {
                     val hit = withExpectedErrors {
-                        elm.sendOrThrow("ATSHFC00${low.toHex(2)}")
-                        val response = elm.send("1001")
-                        response.lines
-                            .map { it.replace(" ", "").uppercase() }
-                            .firstOrNull { it.length > 8 && it.startsWith("17FE") }
-                            ?.let { line -> DiscoveryHit(requestId, line.substring(0, 8).toLong(16).toInt(), line.substring(8)) }
+                        elm.sendOrThrow("ATSH${requestId.toHex(3)}")
+                        parseHit(requestId, elm.send("1001").lines, extended = false)
                     }
-                    probed++
-                    emit(DiscoveryProgress(probed, total, hit))
+                    emit(DiscoveryProgress(++probed, total, hit))
+                }
+
+                val canSend29 = withExpectedErrors {
+                    elm.sendOrThrow("ATSP7")
+                    elm.send("ATCRA")
+                    val check = elm.send("0100")
+                    DebugLog29.last = "Prueba 29 bits (0100 a 18DB33F1): " + check.lines.joinToString(" | ")
+                    (check as? ElmResponse.Error)?.error != ElmError.CAN_ERROR
+                }
+                emit(DiscoveryProgress(++probed, total, null, note = DebugLog29.last))
+                if (canSend29) {
+                    withExpectedErrors {
+                        elm.send("ATCP17")
+                        elm.send("ATCF17FE0000")
+                        elm.send("ATCM1FFF0000")
+                    }
+                    for (requestId in extendedIds) {
+                        val hit = withExpectedErrors {
+                            elm.sendOrThrow("ATSHFC00${(requestId and 0xFF).toHex(2)}")
+                            parseHit(requestId, elm.send("1001").lines, extended = true)
+                        }
+                        emit(DiscoveryProgress(++probed, total, hit))
+                    }
+                } else {
+                    emit(DiscoveryProgress(total, total, null, note = "El adaptador no puede enviar tramas de 29 bits (CAN ERROR): esa parte no se puede probar con él."))
                 }
             } finally {
                 withContext(NonCancellable) {
@@ -292,6 +322,21 @@ class DiagnosisSession(
                 }
             }
         }
+    }
+
+    /** Primera línea que viene de otra centralita (no es el eco de la petición), con su ID. */
+    private fun parseHit(requestId: Int, lines: List<String>, extended: Boolean): DiscoveryHit? {
+        val idLength = if (extended) 8 else 3
+        return lines.map { it.replace(" ", "").uppercase() }
+            .filter { it.length > idLength && it.all { c -> c in "0123456789ABCDEF" } }
+            .firstNotNullOfOrNull { line ->
+                val id = line.substring(0, idLength).toLong(16).toInt()
+                if (extended && line.startsWith("17FE") || !extended && id in 0x700..0x7FF && id != requestId) {
+                    DiscoveryHit(requestId, id, line.substring(idLength))
+                } else {
+                    null
+                }
+            }
     }
 
     private suspend fun scanModule(module: EcuDefinition): ModuleScanResult {
