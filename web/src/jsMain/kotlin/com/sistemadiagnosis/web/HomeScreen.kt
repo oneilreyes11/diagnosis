@@ -149,6 +149,21 @@ private fun App.renderDashboard(screen: HTMLElement, state: LinkState.Connected)
         }
     }
 
+    // Borrado reciente y autopruebas: lo que avisa antes de que se encienda el testigo.
+    if (current != null) {
+        val clear = current.clearCheck?.takeIf { it.severity != null }
+        val findings = current.healthFindings
+        if (clear != null || findings.isNotEmpty()) {
+            screen.div("alert-list") {
+                clear?.let { clearCheckCard(it) }
+                findings.take(2).forEach { findingCard(it) }
+                if (findings.size > 2) {
+                    button("btn btn-ghost btn-sm", "Ver ${plural(findings.size - 2, "aviso más", "avisos más")}", { navigate(Tab.TESTS) })
+                }
+            }
+        }
+    }
+
     // Avisos del historial: averías que vuelven, batería que baja.
     val alerts = if (current != null) historyAlerts else emptyList()
     if (alerts.isNotEmpty()) {
@@ -196,6 +211,7 @@ private fun App.renderDashboard(screen: HTMLElement, state: LinkState.Connected)
         actionRow("alert", "Averías del motor", current?.let {
             if (it.faults.isEmpty()) "Ninguna en el motor" else "${plural(it.faults.size, "código", "códigos")} con explicación"
         } ?: "Leyendo…") { navigate(Tab.FAULTS) }
+        actionRow("gauge", "Autopruebas del motor", engineTestsSummary()) { navigate(Tab.TESTS) }
         actionRow("activity", "Datos en vivo", "${PidCatalog.all.count { it.pid in info.supportedPids }} sensores disponibles") { navigate(Tab.LIVE) }
         actionRow("shield", "Preparación ITV", status?.let {
             if (it.allComplete) "Todos los monitores completos" else "${plural(it.incomplete.size, "monitor pendiente", "monitores pendientes")}"

@@ -58,7 +58,9 @@ object ReportPdf {
         fun render(): ByteArray {
             firstPage()
             summary()
+            clearCheck()
             engineFaults()
+            engineTests()
             freezeFrame()
             modules()
             history()
@@ -134,6 +136,46 @@ object ReportPdf {
                     note.forEach { line(it, 9.0, TEXT_2, 14.0) }
                 }
                 y = top + height + 12
+            }
+        }
+
+        private fun clearCheck() {
+            val check = input.report?.clearCheck ?: return
+            val color = check.severity?.let(::tone) ?: OK
+            val lines = PdfWriter.wrap(check.detail, 8.5, CONTENT - 24)
+            val height = 24 + lines.size * 11.5
+            ensure(height + 14)
+            pdf.fillRect(MARGIN, y, CONTENT, height, PANEL)
+            pdf.fillRect(MARGIN, y, 3.0, height, color)
+            pdf.text(MARGIN + 14, y + 15, "Borrado de averías: ${check.title}", 9.5, Font.BOLD, INK)
+            lines.forEachIndexed { i, text -> pdf.text(MARGIN + 14, y + 28 + i * 11.5, text, 8.5, Font.REGULAR, TEXT_2) }
+            y += height + 14
+        }
+
+        private fun engineTests() {
+            val report = input.report ?: return
+            val tests = report.monitorTests ?: return
+            if (tests.isEmpty()) return
+            section("Autopruebas del motor", "Modo 06 · pruebas que el motor hace solo, con sus límites: avisan antes de que se encienda el testigo")
+            val findings = report.healthFindings
+            if (findings.isEmpty()) {
+                paragraph(if (tests.all { it.notRunYet }) "Pruebas aún sin hacer desde el último borrado de averías." else "Todas las pruebas dentro de límites y con margen.", TEXT_2)
+                y += 6
+            }
+            for (finding in findings) {
+                val body = PdfWriter.wrap(finding.detail, 9.0, CONTENT - 24)
+                val height = 26 + body.size * 12.5
+                ensure(height + 10)
+                val top = y
+                pdf.fillRect(MARGIN, top, 3.0, height, tone(finding.severity))
+                pdf.text(MARGIN + 14, top + 13, finding.title, 10.5, Font.BOLD, INK)
+                y = top + 26
+                body.forEach { line(it, 9.0, TEXT_2, 14.0) }
+                y = top + height + 10
+            }
+            val cylinders = com.sistemadiagnosis.core.analysis.EngineHealth.misfires(tests)
+            if (cylinders.isNotEmpty()) {
+                table(cylinders.map { "Cilindro ${it.cylinder} · fallos de encendido" to "último trayecto ${it.lastTrip ?: "—"} · media ${it.average ?: "—"}" })
             }
         }
 

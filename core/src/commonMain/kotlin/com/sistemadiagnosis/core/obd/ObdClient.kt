@@ -105,6 +105,25 @@ class ObdClient(private val elm: Elm327Driver) {
         request(0x04)
     }
 
+    /**
+     * Autopruebas del motor (servicio 06), solo en CAN: el formato de los demás
+     * protocolos es otro. null si la centralita no las ofrece.
+     */
+    suspend fun readMonitorTests(): List<MonitorTestResult>? {
+        if (activeProtocol?.isCan != true) return null
+        val monitors = supportedPids(0x06).filter { it % 0x20 != 0 }
+        if (monitors.isEmpty()) return null
+        return monitors.flatMap { mid ->
+            // Un monitor que no contesta no impide leer los demás.
+            val messages = try {
+                request(0x06, mid)
+            } catch (e: ElmException) {
+                emptyList()
+            }
+            messages.flatMap(MonitorTests::parse).filter { it.mid == mid }
+        }
+    }
+
     /** Datos congelados de la trama 0; null si la centralita no tiene ninguna guardada. */
     suspend fun readFreezeFrame(): FreezeFrame? {
         val triggerBytes = readPidData(0x02, 0x02) ?: return null

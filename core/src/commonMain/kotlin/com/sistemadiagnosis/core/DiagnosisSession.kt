@@ -1,5 +1,9 @@
 package com.sistemadiagnosis.core
 
+import com.sistemadiagnosis.core.analysis.ClearCheck
+import com.sistemadiagnosis.core.analysis.ClearDetection
+import com.sistemadiagnosis.core.analysis.EngineHealth
+import com.sistemadiagnosis.core.analysis.HealthFinding
 import com.sistemadiagnosis.core.elm.AdapterInfo
 import com.sistemadiagnosis.core.elm.Elm327Driver
 import com.sistemadiagnosis.core.elm.ElmError
@@ -12,6 +16,7 @@ import com.sistemadiagnosis.core.obd.Dtc
 import com.sistemadiagnosis.core.obd.DtcKind
 import com.sistemadiagnosis.core.obd.FreezeFrame
 import com.sistemadiagnosis.core.obd.MonitorStatus
+import com.sistemadiagnosis.core.obd.MonitorTestResult
 import com.sistemadiagnosis.core.obd.ObdClient
 import com.sistemadiagnosis.core.obd.ObdNegativeResponseException
 import com.sistemadiagnosis.core.obd.PidCatalog
@@ -66,7 +71,15 @@ data class DiagnosticReport(
     val freezeFrame: FreezeFrame?,
     /** Contadores de uso: km desde el borrado, calentamientos, km con testigo… */
     val tripData: Map<Int, Double>,
+    /** Autopruebas del motor (modo 06); null si el coche no las da. */
+    val monitorTests: List<MonitorTestResult>? = null,
 ) {
+    /** Lo que dicen las autopruebas: fallos de encendido por cilindro, pruebas al límite… */
+    val healthFindings: List<HealthFinding> get() = monitorTests?.let(EngineHealth::findings).orEmpty()
+
+    /** Si se han borrado averías hace poco; null si el coche no da los contadores. */
+    val clearCheck: ClearCheck? get() = ClearDetection.check(this)
+
     val highestSeverity: Severity? get() = faults.maxOfOrNull { it.severity }
     val confirmedCount: Int get() = faults.count { DtcKind.STORED in it.kinds }
 }
@@ -168,7 +181,8 @@ class DiagnosisSession(
         val freezeFrame = if (faults.isEmpty()) null else orNull { obd.readFreezeFrame() }
         val supported = connection?.supportedPids.orEmpty()
         val trip = orNull { obd.readPids(TRIP_PIDS.filter { it in supported }) } ?: emptyMap()
-        return DiagnosticReport(status, faults, freezeFrame, trip)
+        val tests = orNull { obd.readMonitorTests() }
+        return DiagnosticReport(status, faults, freezeFrame, trip, tests)
     }
 
     /**

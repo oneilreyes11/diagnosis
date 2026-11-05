@@ -68,6 +68,8 @@ internal fun App.renderReadiness(screen: HTMLElement) {
         }
     }
 
+    current.clearCheck?.let { check -> screen.div("alert-list") { clearCheckCard(check) } }
+
     screen.div("card list-card") {
         div("monitor-row") {
             div("monitor-text") {

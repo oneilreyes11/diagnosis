@@ -1,6 +1,8 @@
 package com.sistemadiagnosis.core
 
+import com.sistemadiagnosis.core.analysis.EngineHealth
 import com.sistemadiagnosis.core.history.AlertKind
+import com.sistemadiagnosis.core.obd.MonitorTests
 import com.sistemadiagnosis.core.history.HistoryAnalysis
 import com.sistemadiagnosis.core.history.HistoryEntry
 import com.sistemadiagnosis.core.history.HistoryFault
@@ -135,6 +137,55 @@ class NewFeaturesTest {
         assertEquals(true, entry.milOn)
         assertTrue(entry.allFaults.any { it.source == "17" && it.code == "U012100" })
         assertTrue(entry.allFaults.any { it.source == "01" && it.code == "P0302" })
+    }
+
+    @Test
+    fun `autopruebas del motor detectan el cilindro y el catalizador`() = runTest {
+        val session = DiagnosisSession(MockTransport(SimulatedVehicle.audiA3()), vehicle)
+        session.connect()
+        val report = session.runDiagnostics()
+        val tests = report.monitorTests!!
+        assertTrue(tests.any { it.mid == 0x21 })
+        val cyl2 = EngineHealth.misfires(tests).first { it.cylinder == 2 }
+        assertEquals(14, cyl2.lastTrip)
+        assertEquals(6, cyl2.average)
+        val titles = report.healthFindings.map { it.title }
+        assertTrue(titles.any { "Cilindro 2" in it }, "$titles")
+        assertTrue(titles.any { "Catalizador banco 1" in it }, "$titles")
+        assertTrue(titles.none { "Cilindro 4" in it })
+        // El catalizador pasa: 189/205 de una razón con escalado 1/256.
+        val cat = tests.first { it.mid == 0x21 }
+        assertTrue(cat.passed)
+        assertEquals(189 / 256.0, cat.value)
+        // OBD-II sigue igual después.
+        assertEquals(listOf("P0302", "P2181"), session.runDiagnostics().faults.map { it.dtc.code })
+    }
+
+    @Test
+    fun `registro del modo 06 con signo`() {
+        val bytes = listOf(0x46, 0x01, 0x81, 0x8A, 0xFF, 0x9C, 0xFF, 0x38, 0x00, 0x64).map { it.toByte() }.toByteArray()
+        val t = MonitorTests.parse(bytes).single()
+        assertEquals(-100, t.rawValue)
+        assertEquals(-200, t.rawMin)
+        assertEquals(100, t.rawMax)
+        assertTrue(t.passed)
+        assertEquals("mV", t.unit)
+    }
+
+    @Test
+    fun `deteccion de borrado reciente`() = runTest {
+        val session = DiagnosisSession(MockTransport(SimulatedVehicle.audiA3()), vehicle)
+        session.connect()
+        val before = session.runDiagnostics().clearCheck!!
+        assertNull(before.severity)
+        assertTrue("1.240 km" in before.detail)
+        session.clearFaults()
+        val after = session.runDiagnostics()
+        // P0302 sigue como permanente: borrada pero no reparada.
+        assertEquals(Severity.HIGH, after.clearCheck!!.severity)
+        assertTrue("P0302" in after.clearCheck!!.detail)
+        // Tras borrar, las autopruebas están a cero: ningún aviso falso.
+        assertTrue(after.healthFindings.isEmpty())
     }
 
     @Test

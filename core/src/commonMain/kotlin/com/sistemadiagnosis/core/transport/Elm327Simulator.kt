@@ -22,6 +22,9 @@ data class SimulatedModule(
     val pendingBeforeDtcs: Boolean = false,
 )
 
+/** Autoprueba del modo 06 simulada (valores en bruto). */
+data class SimulatedTest(val tid: Int, val unitId: Int, val value: Int, val min: Int, val max: Int)
+
 /** Cómo atiende el motor (7E0) los servicios UDS. */
 enum class EngineUds {
     /** Responde en la sesión normal. */
@@ -64,6 +67,8 @@ data class SimulatedVehicle(
     val odometerKm: Double = 41_236.0,
     /** Centralitas que contestan con CAN de 29 bits: ID de petición 17FC00xx (responden en 17FE00xx). */
     val extendedModules: Set<Int> = emptySet(),
+    /** Autopruebas del motor (modo 06) por monitor. */
+    val monitorTests: Map<Int, List<SimulatedTest>> = emptyMap(),
 ) {
     companion object {
         /**
@@ -94,6 +99,20 @@ data class SimulatedVehicle(
                 SimulatedModule(0x767, "J949 eCall", "5WA035284D", "0018"),
             ),
             extendedModules = setOf(0x17FC0076, 0x17FC0080),
+            monitorTests = mapOf(
+                // Sondas lambda: bien.
+                0x01 to listOf(SimulatedTest(0x01, 0x0A, 3690, 2460, 4920), SimulatedTest(0x05, 0x10, 72, 0, 150)),
+                0x02 to listOf(SimulatedTest(0x07, 0x0A, 1230, 0, 3280)),
+                // Catalizador: pasa, pero cerca del límite por los fallos del cilindro 2.
+                0x21 to listOf(SimulatedTest(0x80, 0x20, 189, 0, 205)),
+                0x41 to listOf(SimulatedTest(0x81, 0x0E, 820, 400, 2500)),
+                0x42 to listOf(SimulatedTest(0x81, 0x0E, 790, 400, 2500)),
+                0xA1 to listOf(SimulatedTest(0x0B, 0x24, 6, 0, 0), SimulatedTest(0x0C, 0x24, 14, 0, 0)),
+                0xA2 to listOf(SimulatedTest(0x0B, 0x24, 0, 0, 0), SimulatedTest(0x0C, 0x24, 0, 0, 0)),
+                0xA3 to listOf(SimulatedTest(0x0B, 0x24, 6, 0, 0), SimulatedTest(0x0C, 0x24, 14, 0, 0)),
+                0xA4 to listOf(SimulatedTest(0x0B, 0x24, 0, 0, 0), SimulatedTest(0x0C, 0x24, 0, 0, 0)),
+                0xA5 to listOf(SimulatedTest(0x0B, 0x24, 0, 0, 0), SimulatedTest(0x0C, 0x24, 1, 0, 0)),
+            ),
         )
     }
 }
@@ -183,7 +202,7 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
         // Cifra suelta al final: número de respuestas esperadas (servicios 01 y 02).
         val command = when {
             rawCommand.length % 2 == 0 -> rawCommand
-            vehicle.supportsResponseCount && (rawCommand.startsWith("01") || rawCommand.startsWith("02")) -> rawCommand.dropLast(1)
+            vehicle.supportsResponseCount && (rawCommand.startsWith("01") || rawCommand.startsWith("02") || rawCommand.startsWith("06")) -> rawCommand.dropLast(1)
             else -> return listOf("?")
         }
         if (command.startsWith("01") && (command.length - 2) / 2 > vehicle.maxPidsPerRequest) return null
@@ -205,6 +224,7 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
             0x07 -> dtcPayload(0x47, pending)
             0x0A -> dtcPayload(0x4A, permanent)
             0x04 -> clear()
+            0x06 -> monitorTests(bytes.getOrNull(1))
             0x09 -> if (bytes.getOrNull(1) == 0x02) return searching + (vinResponse() ?: listOf("NO DATA")) else null
             else -> null
         }
@@ -296,6 +316,17 @@ class Elm327Simulator(val vehicle: SimulatedVehicle = SimulatedVehicle()) {
         val dtcBytes = dtcs.flatMap { Dtc(it).toBytes().toList() }
         return if (vehicle.protocol.isCan) listOf(responseService, dtcs.size) + dtcBytes
         else listOf(responseService) + dtcBytes + List(if (dtcBytes.isEmpty()) 6 else (6 - dtcBytes.size % 6) % 6) { 0 }
+    }
+
+    // Servicio 06: autopruebas con sus límites; tras borrar, a cero hasta que se vuelven a hacer.
+    private fun monitorTests(mid: Int?): List<Int>? {
+        if (mid == null || vehicle.monitorTests.isEmpty()) return null
+        if (mid % 0x20 == 0) return supportBitmap(vehicle.monitorTests.keys, mid)?.let { listOf(0x46, mid) + it.toList() }
+        val tests = vehicle.monitorTests[mid] ?: return null
+        return listOf(0x46) + tests.flatMap { t ->
+            val (value, min, max) = if (monitorsReset) Triple(0, 0, 0) else Triple(t.value, t.min, t.max)
+            listOf(mid, t.tid, t.unitId) + listOf(value, min, max).flatMap { listOf((it shr 8) and 0xFF, it and 0xFF) }
+        }
     }
 
     private fun clear(): List<Int> {

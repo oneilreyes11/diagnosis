@@ -1,6 +1,6 @@
 // Guarda la app para abrirla sin conexión (en el coche no siempre hay cobertura).
 // Red primero: con conexión siempre se sirve la última versión publicada.
-const CACHE = 'diagnosis-v4';
+const CACHE = 'diagnosis-v5';
 const SHELL = ['./', 'index.html', 'styles.css', 'diagnosis.js', 'manifest.webmanifest',
   'icon.svg', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 

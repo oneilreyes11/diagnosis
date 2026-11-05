@@ -43,6 +43,7 @@ enum class Tab(val label: String, val icon: String, val slug: String, val inBar:
     MORE("Más", "more", "mas"),
     HISTORY("Historial", "clock", "historial", inBar = false),
     EXPLORER("Valores de medición", "gauge", "medidas", inBar = false),
+    TESTS("Autopruebas del motor", "gauge", "autopruebas", inBar = false),
 }
 
 /** Estado de la app y acciones; las pantallas lo leen y lo pintan. */
@@ -178,6 +179,7 @@ class App(private val root: HTMLElement) {
             Tab.MORE -> renderMore(screen)
             Tab.HISTORY -> renderHistory(screen)
             Tab.EXPLORER -> renderExplorer(screen)
+            Tab.TESTS -> renderEngineTests(screen)
         }
     }
 
@@ -305,7 +307,10 @@ class App(private val root: HTMLElement) {
             try {
                 val result = current.runDiagnostics()
                 report = result
-                DebugLog.add("Diagnosis: terminada · ${result.faults.size} averías · monitores=${result.monitorStatus != null}")
+                DebugLog.add("Diagnosis: terminada · ${result.faults.size} averías · monitores=${result.monitorStatus != null} · autopruebas=${result.monitorTests?.size ?: "no"}")
+                result.monitorTests?.forEach { t ->
+                    DebugLog.add("Modo 06: MID ${t.mid.toString(16)} TID ${t.tid.toString(16)} UAS ${t.unitId.toString(16)} valor ${t.rawValue} [${t.rawMin}..${t.rawMax}]")
+                }
                 connection?.let { info -> updateEntry { it.withDiagnosis(info, result) } }
             } catch (e: DiagnosisException) {
                 handleFailure(e)

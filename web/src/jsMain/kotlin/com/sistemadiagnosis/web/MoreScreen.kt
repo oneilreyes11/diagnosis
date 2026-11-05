@@ -53,6 +53,7 @@ internal fun App.renderMore(screen: HTMLElement) {
 
     screen.div("card list-card") {
         actionRow("clock", "Historial", "${plural(history.size, "lectura guardada", "lecturas guardadas")}") { navigate(Tab.HISTORY) }
+        actionRow("gauge", "Autopruebas del motor", "Fallos de encendido por cilindro, catalizador y sondas") { navigate(Tab.TESTS) }
         actionRow("gauge", "Valores de medición", "Explorador de datos de cada centralita (solo lectura)") { navigate(Tab.EXPLORER) }
         actionRow("share", "Informe PDF", "Para el taller o para vender el coche") { exportPdf() }
     }
@@ -126,6 +127,6 @@ internal fun App.renderMore(screen: HTMLElement) {
             el("li", "", "Codificación y adaptaciones no disponibles: tu A3 lleva protección de diagnosis (SFD) que solo Volkswagen puede desbloquear.")
             el("li", "", "Orientativo: no sustituye la revisión de un profesional.")
         }
-        p("muted version", "Diagnosis · fase 4")
+        p("muted version", "Diagnosis · fase 5")
     }
 }
